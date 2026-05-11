@@ -1,0 +1,93 @@
+from enum import StrEnum
+
+
+class UserRole(StrEnum):
+    ADMIN = "admin"
+    MANAGER = "manager"
+    BARBER = "barber"
+    STAFF = "staff"
+
+
+class AccountStatus(StrEnum):
+    ACTIVE = "active"
+    DISABLED = "disabled"
+    DELETED = "deleted"
+
+
+class SalaryType(StrEnum):
+    FIXED = "fixed"
+    COMMISSION = "commission"
+    FIXED_OR_COMMISSION = "fixed_or_commission"
+
+
+class PaymentMethod(StrEnum):
+    CASH = "cash"
+    TRANSFER = "transfer"
+    POS = "pos"
+
+
+class LedgerEntryType(StrEnum):
+    SERVICE = "service"
+    SALE = "sale"
+    EXPENSE = "expense"
+
+
+class FinancialMonthState(StrEnum):
+    OPEN = "open"
+    CLOSED = "closed"
+    PAID_LOCKED = "paid_locked"
+
+
+class RecordLifecycleState(StrEnum):
+    ACTIVE = "active"
+    DELETED = "deleted"
+    PURGED = "purged"
+
+
+class LedgerReconciliationStatus(StrEnum):
+    """Per-entry lifecycle for barber/manager financial alignment."""
+
+    PENDING = "pending"
+    APPROVED = "approved"
+    ADJUSTED = "adjusted"
+    AWAITING_BARBER_REVIEW = "awaiting_barber_review"
+    SETTLED = "settled"
+    DISPUTED = "disputed"
+    LOCKED = "locked"
+    MISSING_BARBER_ENTRY = "missing_barber_entry"
+    MANAGER_OVERRIDE = "manager_override"
+
+
+class BarberDailySummaryStatus(StrEnum):
+    OPEN = "open"
+    AWAITING_BARBER_REVIEW = "awaiting_barber_review"
+    DISPUTED = "disputed"
+    SETTLED = "settled"
+    ADMIN_PENDING = "admin_pending"
+    SETTLED_BY_ADMIN = "settled_by_admin"
+
+
+class ReconciliationTimelineEventType(StrEnum):
+    BARBER_SUBMITTED = "barber_submitted"
+    MANAGER_ADJUSTED = "manager_adjusted"
+    MANAGER_APPROVED_SUMMARY = "manager_approved_summary"
+    BARBER_ACCEPTED = "barber_accepted"
+    BARBER_REJECTED = "barber_rejected"
+    MANAGER_REVISED = "manager_revised"
+    ADMIN_RESOLVED = "admin_resolved"
+    ENTRY_SOFT_DELETED = "entry_soft_deleted"
+    ENTRY_PURGED = "entry_purged"
+    MONTH_REOPENED = "month_reopened"
+
+
+class AppNotificationType(StrEnum):
+    PENDING_APPROVALS = "pending_approvals"
+    UNRESOLVED_MISMATCH = "unresolved_mismatch"
+    RECONCILIATION_REVIEW_REQUEST = "reconciliation_review_request"
+    DISPUTE_REQUIRES_MANAGER = "dispute_requires_manager"
+    DISPUTE_REQUIRES_ADMIN = "dispute_requires_admin"
+
+
+class CommissionPayoutState(StrEnum):
+    UNPAID = "unpaid"
+    PAID = "paid"
