@@ -13,14 +13,12 @@ class BarberServiceCreateBody(BaseModel):
     occurred_at: datetime
     service_type_id: UUID
     amount: Decimal = Field(..., gt=0)
-    payment_method: PaymentMethod
     note: str | None = None
 
 
 class BarberServiceUpdateBody(BaseModel):
     amount: Decimal | None = Field(default=None, gt=0)
     service_type_id: UUID | None = None
-    payment_method: PaymentMethod | None = None
     note: str | None = None
 
 

@@ -24,6 +24,15 @@ class PaymentMethod(StrEnum):
     CASH = "cash"
     TRANSFER = "transfer"
     POS = "pos"
+    CASH_SHOP = "cash_shop"
+    ADMIN_TRANSFER = "admin_transfer"
+
+
+class ExpensePaymentSource(StrEnum):
+    """How an operational expense was funded (manager/admin expense entries)."""
+
+    CASH_SHOP = "cash_shop"
+    ADMIN_TRANSFER = "admin_transfer"
 
 
 class LedgerEntryType(StrEnum):
@@ -33,9 +42,11 @@ class LedgerEntryType(StrEnum):
 
 
 class FinancialMonthState(StrEnum):
+    """Operational accounting period lifecycle."""
+
     OPEN = "open"
-    CLOSED = "closed"
-    PAID_LOCKED = "paid_locked"
+    GRACE_PERIOD = "grace_period"
+    LOCKED = "locked"
 
 
 class RecordLifecycleState(StrEnum):
@@ -91,3 +102,9 @@ class AppNotificationType(StrEnum):
 class CommissionPayoutState(StrEnum):
     UNPAID = "unpaid"
     PAID = "paid"
+
+
+class ServiceTypeStatus(StrEnum):
+    ACTIVE = "active"
+    DISABLED = "disabled"
+    ARCHIVED = "archived"

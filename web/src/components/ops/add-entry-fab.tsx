@@ -1,9 +1,12 @@
 "use client";
 
 import * as React from "react";
-import { Plus } from "lucide-react";
+import { Plus, Scissors, Tag, Wallet } from "lucide-react";
 import { toast } from "sonner";
 
+import { useAuth } from "@/components/providers/auth-provider";
+import { CategorySelect } from "@/components/ops/category-select";
+import { ServiceTypeSelect } from "@/components/ops/service-type-select";
 import {
   ApiError,
   createBarbershopLedgerEntry,
@@ -11,6 +14,8 @@ import {
   listExpenseCategories,
   listSaleCategories,
   listServiceTypes,
+  type CategoryItem,
+  type ServiceTypeItem,
 } from "@/lib/api";
 import {
   Dialog,
@@ -22,30 +27,70 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  EXPENSE_PAYMENT_SOURCES,
+  type ExpensePaymentSource,
+} from "@/lib/expense-payment";
 import { cn } from "@/lib/utils";
 
-type EntryKind = "service" | "sale" | "expense";
+export type EntryKind = "service" | "sale" | "expense";
 
-const paymentMethods = ["cash", "transfer", "pos"] as const;
+const revenuePaymentMethods = ["cash", "transfer", "pos"] as const;
 
-export function AddEntryFab({ onCreated }: { onCreated?: () => void }) {
+const ENTRY_META: Record<
+  EntryKind,
+  { label: string; dialogTitle: string; submitLabel: string; Icon: typeof Scissors }
+> = {
+  service: { label: "Record service", dialogTitle: "Record service", submitLabel: "Record service", Icon: Scissors },
+  sale: { label: "Record sale", dialogTitle: "Record sale", submitLabel: "Record sale", Icon: Tag },
+  expense: {
+    label: "Record expense",
+    dialogTitle: "Record expense",
+    submitLabel: "Record expense",
+    Icon: Wallet,
+  },
+};
+
+export type AddEntryFabProps = {
+  onCreated?: () => void;
+  /** When set, locks the form to one entry type and hides the kind switcher. */
+  entryType?: EntryKind;
+  variant?: "fab" | "inline";
+  label?: string;
+  className?: string;
+};
+
+export function AddEntryFab({
+  onCreated,
+  entryType,
+  variant = "fab",
+  label,
+  className,
+}: AddEntryFabProps) {
+  const { session } = useAuth();
+  const canManageCatalog =
+    session?.role === "admin" || session?.role === "manager";
+  const locked = entryType != null;
+  const meta = ENTRY_META[entryType ?? "service"];
+
   const [open, setOpen] = React.useState(false);
-  const [kind, setKind] = React.useState<EntryKind>("service");
+  const [kind, setKind] = React.useState<EntryKind>(entryType ?? "service");
 
   const [catalogLoading, setCatalogLoading] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
 
-  const [serviceTypes, setServiceTypes] = React.useState<{ id: string; name: string }[]>([]);
-  const [saleCategories, setSaleCategories] = React.useState<{ id: string; name: string }[]>([]);
-  const [expenseCategories, setExpenseCategories] = React.useState<{ id: string; name: string }[]>(
-    [],
-  );
+  const [serviceTypes, setServiceTypes] = React.useState<ServiceTypeItem[]>([]);
+  const [saleCategories, setSaleCategories] = React.useState<CategoryItem[]>([]);
+  const [expenseCategories, setExpenseCategories] = React.useState<CategoryItem[]>([]);
   const [barbers, setBarbers] = React.useState<{ id: string; name: string }[]>([]);
 
   const [serviceTypeId, setServiceTypeId] = React.useState("");
   const [employeeId, setEmployeeId] = React.useState("");
   const [amount, setAmount] = React.useState("");
-  const [paymentMethod, setPaymentMethod] = React.useState<(typeof paymentMethods)[number]>("cash");
+  const [paymentMethod, setPaymentMethod] =
+    React.useState<(typeof revenuePaymentMethods)[number]>("cash");
+  const [expensePaymentSource, setExpensePaymentSource] =
+    React.useState<ExpensePaymentSource>("cash_shop");
   const [note, setNote] = React.useState("");
 
   const [saleCategoryId, setSaleCategoryId] = React.useState("");
@@ -61,13 +106,9 @@ export function AddEntryFab({ onCreated }: { onCreated?: () => void }) {
         listDirectoryBarbers(),
       ]);
 
-      const svcItems = svc.items.filter((s) => s.is_active).map((s) => ({ id: s.id, name: s.name }));
-      const saleItems = sales.items
-        .filter((s) => s.is_active)
-        .map((s) => ({ id: s.id, name: s.name }));
-      const expItems = exp.items
-        .filter((s) => s.is_active)
-        .map((s) => ({ id: s.id, name: s.name }));
+      const svcItems = svc.items;
+      const saleItems = sales.items;
+      const expItems = exp.items;
       const barberItems = roster.items.map((b) => ({
         id: b.id,
         name: b.full_name?.trim() || `@${b.username}`,
@@ -78,9 +119,12 @@ export function AddEntryFab({ onCreated }: { onCreated?: () => void }) {
       setExpenseCategories(expItems);
       setBarbers(barberItems);
 
-      setServiceTypeId((prev) => prev || svcItems[0]?.id || "");
-      setSaleCategoryId((prev) => prev || saleItems[0]?.id || "");
-      setExpenseCategoryId((prev) => prev || expItems[0]?.id || "");
+      const firstActive = svcItems.find((s) => s.status === "active");
+      const firstSale = saleItems.find((s) => s.status === "active");
+      const firstExpense = expItems.find((s) => s.status === "active");
+      setServiceTypeId((prev) => prev || firstActive?.id || "");
+      setSaleCategoryId((prev) => prev || firstSale?.id || "");
+      setExpenseCategoryId((prev) => prev || firstExpense?.id || "");
       setEmployeeId((prev) => prev || barberItems[0]?.id || "");
     } catch (e) {
       if (e instanceof ApiError) toast.error(e.message);
@@ -89,6 +133,10 @@ export function AddEntryFab({ onCreated }: { onCreated?: () => void }) {
       setCatalogLoading(false);
     }
   }, []);
+
+  React.useEffect(() => {
+    if (entryType) setKind(entryType);
+  }, [entryType]);
 
   React.useEffect(() => {
     if (!open) return;
@@ -100,12 +148,13 @@ export function AddEntryFab({ onCreated }: { onCreated?: () => void }) {
   function reset() {
     setAmount("");
     setNote("");
-    setKind("service");
-    setServiceTypeId(serviceTypes[0]?.id ?? "");
+    setKind(entryType ?? "service");
+    setServiceTypeId(serviceTypes.find((s) => s.status === "active")?.id ?? "");
     setEmployeeId(barbers[0]?.id ?? "");
     setPaymentMethod("cash");
-    setSaleCategoryId(saleCategories[0]?.id ?? "");
-    setExpenseCategoryId(expenseCategories[0]?.id ?? "");
+    setExpensePaymentSource("cash_shop");
+    setSaleCategoryId(saleCategories.find((s) => s.status === "active")?.id ?? "");
+    setExpenseCategoryId(expenseCategories.find((s) => s.status === "active")?.id ?? "");
   }
 
   async function submit(e: React.FormEvent) {
@@ -138,28 +187,34 @@ export function AddEntryFab({ onCreated }: { onCreated?: () => void }) {
     setSaving(true);
     try {
       const occurred_at = new Date().toISOString();
-      const base = {
-        entry_type: kind,
-        occurred_at,
-        amount: n,
-        payment_method: paymentMethod,
-        note: note.trim() || null,
-      };
+      const noteValue = note.trim() || null;
 
       if (kind === "service") {
         await createBarbershopLedgerEntry({
-          ...base,
+          entry_type: "service",
+          occurred_at,
+          amount: n,
+          payment_method: paymentMethod,
+          note: noteValue,
           service_type_id: serviceTypeId,
           employee_user_id: employeeId,
         });
       } else if (kind === "sale") {
         await createBarbershopLedgerEntry({
-          ...base,
+          entry_type: "sale",
+          occurred_at,
+          amount: n,
+          payment_method: paymentMethod,
+          note: noteValue,
           sale_category_id: saleCategoryId,
         });
       } else {
         await createBarbershopLedgerEntry({
-          ...base,
+          entry_type: "expense",
+          occurred_at,
+          amount: n,
+          payment_method: expensePaymentSource,
+          note: noteValue,
           expense_category_id: expenseCategoryId,
         });
       }
@@ -178,74 +233,89 @@ export function AddEntryFab({ onCreated }: { onCreated?: () => void }) {
     }
   }
 
-  return (
-    <>
+  const triggerLabel = label ?? (locked ? meta.label : "Add entry");
+  const dialogTitle = locked ? meta.dialogTitle : "Add ledger entry";
+  const submitLabel = locked ? meta.submitLabel : "Save entry";
+  const TriggerIcon = locked ? meta.Icon : Plus;
+
+  const trigger =
+    variant === "fab" ? (
       <Button
         type="button"
         size="icon-lg"
-        aria-label="Add entry"
+        aria-label={triggerLabel}
         onClick={() => setOpen(true)}
         className={cn(
           "fixed bottom-6 right-6 z-40 h-14 w-14 rounded-full border border-[var(--border)] bg-[var(--foreground)] text-[var(--background)] shadow-[var(--shadow-elevated)]",
-          "hover:opacity-95 active:scale-[0.98]",
+          "transition-opacity duration-200 hover:opacity-95 active:scale-[0.98]",
+          className,
         )}
       >
         <Plus className="h-6 w-6" strokeWidth={1.75} />
       </Button>
+    ) : (
+      <Button
+        type="button"
+        className={cn(
+          "rounded-full bg-[var(--foreground)] px-6 text-[var(--background)]",
+          className,
+        )}
+        onClick={() => setOpen(true)}
+      >
+        <TriggerIcon className="mr-2 h-4 w-4" strokeWidth={1.75} />
+        {triggerLabel}
+      </Button>
+    );
+
+  return (
+    <>
+      {trigger}
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="w-[min(100%,26rem)]">
           <DialogHeader>
-            <DialogTitle>Add ledger entry</DialogTitle>
+            <DialogTitle>{dialogTitle}</DialogTitle>
           </DialogHeader>
           <DialogBody>
             <form onSubmit={(e) => void submit(e)} className="space-y-5">
-              <div className="flex flex-wrap gap-1.5">
-                {(
-                  [
-                    ["service", "Service"],
-                    ["sale", "Sale"],
-                    ["expense", "Expense"],
-                  ] as const
-                ).map(([id, label]) => (
-                  <Button
-                    key={id}
-                    type="button"
-                    size="sm"
-                    variant={kind === id ? "default" : "outline"}
-                    className={
-                      kind === id
-                        ? "rounded-full border-transparent bg-[var(--foreground)] text-[var(--background)]"
-                        : "rounded-full border-dashed"
-                    }
-                    onClick={() => setKind(id)}
-                  >
-                    {label}
-                  </Button>
-                ))}
-              </div>
+              {!locked ? (
+                <div className="flex flex-wrap gap-1.5">
+                  {(
+                    [
+                      ["service", "Service"],
+                      ["sale", "Sale"],
+                      ["expense", "Expense"],
+                    ] as const
+                  ).map(([id, chipLabel]) => (
+                    <Button
+                      key={id}
+                      type="button"
+                      size="sm"
+                      variant={kind === id ? "default" : "outline"}
+                      className={
+                        kind === id
+                          ? "rounded-full border-transparent bg-[var(--foreground)] text-[var(--background)]"
+                          : "rounded-full border-dashed"
+                      }
+                      onClick={() => setKind(id)}
+                    >
+                      {chipLabel}
+                    </Button>
+                  ))}
+                </div>
+              ) : null}
 
               {kind === "service" ? (
                 <>
-                  <div className="space-y-1.5">
-                    <Label>Service type</Label>
-                    <select
-                      value={serviceTypeId}
-                      onChange={(e) => setServiceTypeId(e.target.value)}
-                      className="flex h-10 w-full rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--input-bg)] px-3 text-sm"
-                      disabled={catalogLoading}
-                    >
-                      {serviceTypes.length === 0 ? (
-                        <option value="">No service types yet</option>
-                      ) : (
-                        serviceTypes.map((s) => (
-                          <option key={s.id} value={s.id}>
-                            {s.name}
-                          </option>
-                        ))
-                      )}
-                    </select>
-                  </div>
+                  <ServiceTypeSelect
+                    services={serviceTypes}
+                    value={serviceTypeId}
+                    onChange={setServiceTypeId}
+                    onServicesChange={setServiceTypes}
+                    canManage={canManageCatalog}
+                    loading={catalogLoading}
+                    label="Service"
+                  />
                   <div className="space-y-1.5">
                     <Label>Barber</Label>
                     <select
@@ -269,47 +339,27 @@ export function AddEntryFab({ onCreated }: { onCreated?: () => void }) {
               ) : null}
 
               {kind === "sale" ? (
-                <div className="space-y-1.5">
-                  <Label>Sale category</Label>
-                  <select
-                    value={saleCategoryId}
-                    onChange={(e) => setSaleCategoryId(e.target.value)}
-                    className="flex h-10 w-full rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--input-bg)] px-3 text-sm"
-                    disabled={catalogLoading}
-                  >
-                    {saleCategories.length === 0 ? (
-                      <option value="">No sale categories yet</option>
-                    ) : (
-                      saleCategories.map((s) => (
-                        <option key={s.id} value={s.id}>
-                          {s.name}
-                        </option>
-                      ))
-                    )}
-                  </select>
-                </div>
+                <CategorySelect
+                  kind="sale"
+                  categories={saleCategories}
+                  value={saleCategoryId}
+                  onChange={setSaleCategoryId}
+                  onCategoriesChange={setSaleCategories}
+                  canManage={canManageCatalog}
+                  loading={catalogLoading}
+                />
               ) : null}
 
               {kind === "expense" ? (
-                <div className="space-y-1.5">
-                  <Label>Expense category</Label>
-                  <select
-                    value={expenseCategoryId}
-                    onChange={(e) => setExpenseCategoryId(e.target.value)}
-                    className="flex h-10 w-full rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--input-bg)] px-3 text-sm"
-                    disabled={catalogLoading}
-                  >
-                    {expenseCategories.length === 0 ? (
-                      <option value="">No expense categories yet</option>
-                    ) : (
-                      expenseCategories.map((s) => (
-                        <option key={s.id} value={s.id}>
-                          {s.name}
-                        </option>
-                      ))
-                    )}
-                  </select>
-                </div>
+                <CategorySelect
+                  kind="expense"
+                  categories={expenseCategories}
+                  value={expenseCategoryId}
+                  onChange={setExpenseCategoryId}
+                  onCategoriesChange={setExpenseCategories}
+                  canManage={canManageCatalog}
+                  loading={catalogLoading}
+                />
               ) : null}
 
               <div className="space-y-1.5">
@@ -324,22 +374,47 @@ export function AddEntryFab({ onCreated }: { onCreated?: () => void }) {
                 />
               </div>
 
-              <div className="space-y-1.5">
-                <Label>Payment method</Label>
-                <select
-                  value={paymentMethod}
-                  onChange={(e) =>
-                    setPaymentMethod(e.target.value as (typeof paymentMethods)[number])
-                  }
-                  className="flex h-10 w-full rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--input-bg)] px-3 text-sm capitalize"
-                >
-                  {paymentMethods.map((m) => (
-                    <option key={m} value={m}>
-                      {m}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              {kind === "expense" ? (
+                <div className="space-y-1.5">
+                  <Label>Payment source</Label>
+                  <select
+                    value={expensePaymentSource}
+                    onChange={(e) =>
+                      setExpensePaymentSource(e.target.value as ExpensePaymentSource)
+                    }
+                    className="flex h-10 w-full rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--input-bg)] px-3 text-sm"
+                  >
+                    {EXPENSE_PAYMENT_SOURCES.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs leading-relaxed text-[var(--muted-foreground)]">
+                    {
+                      EXPENSE_PAYMENT_SOURCES.find((o) => o.value === expensePaymentSource)
+                        ?.description
+                    }
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-1.5">
+                  <Label>Payment method</Label>
+                  <select
+                    value={paymentMethod}
+                    onChange={(e) =>
+                      setPaymentMethod(e.target.value as (typeof revenuePaymentMethods)[number])
+                    }
+                    className="flex h-10 w-full rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--input-bg)] px-3 text-sm capitalize"
+                  >
+                    {revenuePaymentMethods.map((m) => (
+                      <option key={m} value={m}>
+                        {m}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
               <div className="space-y-1.5">
                 <Label htmlFor="note">Note</Label>
@@ -352,7 +427,7 @@ export function AddEntryFab({ onCreated }: { onCreated?: () => void }) {
               </div>
 
               <Button type="submit" className="w-full rounded-full bg-[var(--foreground)] text-[var(--background)]">
-                {saving ? "Saving…" : "Save entry"}
+                {saving ? "Saving…" : submitLabel}
               </Button>
             </form>
           </DialogBody>

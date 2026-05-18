@@ -18,6 +18,12 @@ export function formatCompactNaira(amount: number) {
   return formatNaira(amount);
 }
 
+export function formatServicesCount(count: number) {
+  const n = Math.max(0, Math.round(count));
+  if (n === 1) return "1 service";
+  return `${n.toLocaleString("en-NG")} services`;
+}
+
 export function formatTimeLabel(iso: string) {
   const d = new Date(iso);
   return d.toLocaleString("en-NG", {
@@ -25,5 +31,17 @@ export function formatTimeLabel(iso: string) {
     month: "short",
     hour: "2-digit",
     minute: "2-digit",
+  });
+}
+
+/** Short date for catalog management rows (e.g. 12 May 2026). */
+export function formatCatalogDate(iso: string | null | undefined) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleDateString("en-NG", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
   });
 }

@@ -15,6 +15,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { barbershopNav, filterNavForRole } from "@/lib/navigation";
+import { getHomePath } from "@/lib/routing";
 import { cn } from "@/lib/utils";
 
 const STORAGE_KEY = "remarkable:sidebar-collapsed";
@@ -52,6 +53,7 @@ export function AppSidebar({ className }: AppSidebarProps) {
   };
 
   const items = filterNavForRole(barbershopNav, session?.role);
+  const homeHref = getHomePath(session?.role);
 
   const widthClass = collapsed ? "w-[var(--sidebar-collapsed)]" : "w-[var(--sidebar-width)]";
 
@@ -70,7 +72,7 @@ export function AppSidebar({ className }: AppSidebarProps) {
         )}
       >
         <Link
-          href="/modules"
+          href={homeHref}
           className={cn(
             "transition-opacity hover:opacity-70",
             collapsed ? "flex justify-center" : "w-full",

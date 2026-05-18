@@ -9,6 +9,7 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/components/providers/auth-provider";
+import { isServiceProvider } from "@/lib/roles";
 import {
   ApiError,
   barberAcceptReconciliationDay,
@@ -46,7 +47,7 @@ export default function ReconciliationPage() {
       title="Reconciliation"
       subtitle="Manager propose → barber review → dispute → admin override."
     >
-      {role === "barber" ? <BarberReconciliation /> : <ManagerReconciliation />}
+      {isServiceProvider(role) ? <BarberReconciliation /> : <ManagerReconciliation />}
     </BarbershopShell>
   );
 }

@@ -2,14 +2,18 @@
 
 import * as React from "react";
 
-import { AddEntryFab } from "@/components/ops/add-entry-fab";
+import { AddEntryFab, type EntryKind } from "@/components/ops/add-entry-fab";
+import { RecordServiceFab } from "@/components/ops/record-service-fab";
+import { useAuth } from "@/components/providers/auth-provider";
 import { ReconciliationReviewDialog } from "@/components/ops/reconciliation-review-dialog";
 import { StatusBadge } from "@/components/ops/status-badge";
 import { useOpsNotifications } from "@/components/ops/ops-notifications-context";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ApiError, listBarbershopLedger, type LedgerRow } from "@/lib/api";
+import { formatExpensePaymentSource } from "@/lib/expense-payment";
 import { formatNaira, formatTimeLabel } from "@/lib/format";
+import { isManagerUp, isServiceProvider } from "@/lib/roles";
 import type { LedgerEntryType, LedgerTransaction, TransactionStatus } from "@/lib/ops-types";
 import { toast } from "sonner";
 
@@ -20,11 +24,18 @@ type QuickFilter =
   | "approved"
   | "disputed";
 
-const FILTERS: { id: QuickFilter; label: string }[] = [
+const MANAGER_FILTERS: { id: QuickFilter; label: string }[] = [
   { id: "all", label: "All" },
   { id: "service", label: "Services" },
   { id: "sale", label: "Sales" },
   { id: "expense", label: "Expenses" },
+  { id: "pending", label: "Pending" },
+  { id: "approved", label: "Approved" },
+  { id: "disputed", label: "Disputed" },
+];
+
+const PROVIDER_FILTERS: { id: QuickFilter; label: string }[] = [
+  { id: "service", label: "Services" },
   { id: "pending", label: "Pending" },
   { id: "approved", label: "Approved" },
   { id: "disputed", label: "Disputed" },
@@ -36,26 +47,128 @@ function typeLabel(t: LedgerTransaction) {
   return t.expenseCategory ?? "Expense";
 }
 
+const APPROVED_STATUSES: TransactionStatus[] = ["approved", "settled", "adjusted"];
+
 function matchesFilter(row: LedgerTransaction, f: QuickFilter) {
   if (f === "all") return true;
-  if (f === "pending" || f === "approved" || f === "disputed") {
-    return row.status === (f as TransactionStatus);
-  }
+  if (f === "pending") return row.status === "pending";
+  if (f === "approved") return APPROVED_STATUSES.includes(row.status);
+  if (f === "disputed") return row.status === "disputed";
   return row.type === f;
 }
 
+function isEntryWorkflowFilter(f: QuickFilter): f is EntryKind {
+  return f === "service" || f === "sale" || f === "expense";
+}
+
+function emptyLedgerCopy(
+  filter: QuickFilter,
+  providerView: boolean,
+): { title: string; body: string; showEntryAction: boolean } {
+  if (providerView) {
+    switch (filter) {
+      case "service":
+        return {
+          title: "No services recorded yet",
+          body: "Start your day by logging the first service. Each entry gets an index number and stays pending until reconciliation.",
+          showEntryAction: true,
+        };
+      case "pending":
+        return {
+          title: "Nothing pending review",
+          body: "Services awaiting reconciliation will appear here once recorded.",
+          showEntryAction: false,
+        };
+      case "approved":
+        return {
+          title: "No approved services yet",
+          body: "Approved and settled services show here after reconciliation.",
+          showEntryAction: false,
+        };
+      case "disputed":
+        return {
+          title: "No disputed services",
+          body: "Disputed lines appear here when reconciliation needs follow-up.",
+          showEntryAction: false,
+        };
+      default:
+        return { title: "No services", body: "", showEntryAction: false };
+    }
+  }
+
+  switch (filter) {
+    case "service":
+      return {
+        title: "No services recorded yet",
+        body: "Post the first service line to start the operational timeline for this lane.",
+        showEntryAction: true,
+      };
+    case "sale":
+      return {
+        title: "No sales recorded yet",
+        body: "Capture retail or product sales here when the lane is active.",
+        showEntryAction: true,
+      };
+    case "expense":
+      return {
+        title: "No expenses recorded yet",
+        body: "Log shop expenses here to keep the ledger complete.",
+        showEntryAction: true,
+      };
+    case "pending":
+      return {
+        title: "Nothing pending review",
+        body: "Entries awaiting reconciliation will appear in this view.",
+        showEntryAction: false,
+      };
+    case "approved":
+      return {
+        title: "No approved entries",
+        body: "Approved and settled lines show here after reconciliation.",
+        showEntryAction: false,
+      };
+    case "disputed":
+      return {
+        title: "No disputed entries",
+        body: "Disputed lines appear here when reconciliation needs follow-up.",
+        showEntryAction: false,
+      };
+    default:
+      return {
+        title: "No transactions recorded yet",
+        body: "The ledger stays empty until services, sales, and expenses are posted. Switch to a lane tab to record entries.",
+        showEntryAction: false,
+      };
+  }
+}
+
 export function DailyLedgerPanel() {
+  const { session } = useAuth();
+  const providerView = isServiceProvider(session?.role);
+  const canAddEntry = isManagerUp(session?.role);
+  const filters = providerView ? PROVIDER_FILTERS : MANAGER_FILTERS;
+
   const { dismissByTransactionId } = useOpsNotifications();
   const [rows, setRows] = React.useState<LedgerTransaction[]>([]);
   const [loading, setLoading] = React.useState(true);
-  const [filter, setFilter] = React.useState<QuickFilter>("all");
+  const [filter, setFilter] = React.useState<QuickFilter>(providerView ? "service" : "all");
   const [review, setReview] = React.useState<LedgerTransaction | null>(null);
+
+  const entryWorkflow = isEntryWorkflowFilter(filter);
+  const showRecordService = providerView && filter === "service";
+  const showManagerEntry = canAddEntry && entryWorkflow;
 
   const load = React.useCallback(async () => {
     setLoading(true);
     try {
       const res = await listBarbershopLedger();
-      setRows(res.items.map(mapLedgerRow));
+      let mapped = res.items.map(mapLedgerRow);
+      if (providerView && session?.user_id) {
+        mapped = mapped.filter(
+          (r) => r.type === "service" && r.employeeId === session.user_id,
+        );
+      }
+      setRows(mapped);
     } catch (e) {
       if (e instanceof ApiError) toast.error(e.message);
       else toast.error("Could not load ledger.");
@@ -63,7 +176,7 @@ export function DailyLedgerPanel() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [providerView, session]);
 
   React.useEffect(() => {
     queueMicrotask(() => {
@@ -77,15 +190,19 @@ export function DailyLedgerPanel() {
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }, [rows, filter]);
 
+  const description = providerView
+    ? "Your service timeline. Record work as you go, then track pending and approved totals through reconciliation."
+    : "Unified operational timeline. Filter by lane or control state, then drill into reconciliation without leaving the flow.";
+
+  const emptyCopy = emptyLedgerCopy(filter, providerView);
+  const refresh = () => void load();
+
   return (
     <div className="space-y-8">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-        <p className="max-w-xl text-sm leading-relaxed text-[var(--muted-foreground)]">
-          Unified operational timeline. Filter by lane or control state, then drill into
-          reconciliation without leaving the flow.
-        </p>
+        <p className="max-w-xl text-sm leading-relaxed text-[var(--muted-foreground)]">{description}</p>
         <div className="flex flex-wrap gap-1.5">
-          {FILTERS.map((chip) => (
+          {filters.map((chip) => (
             <Button
               key={chip.id}
               type="button"
@@ -112,13 +229,21 @@ export function DailyLedgerPanel() {
         ) : sorted.length === 0 ? (
           <div className="bg-[var(--card)] px-6 py-16 text-center md:px-10">
             <p className="font-[family-name:var(--font-serif)] text-lg font-medium text-[var(--foreground)]">
-              No transactions recorded yet
+              {emptyCopy.title}
             </p>
             <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-[var(--muted-foreground)]">
-              The ledger stays empty until services, sales, and expenses are posted. Use{" "}
-              <span className="font-medium text-[var(--foreground)]">Add entry</span> when you are
-              ready to capture the first line.
+              {emptyCopy.body}
             </p>
+            {emptyCopy.showEntryAction && showRecordService ? (
+              <div className="mt-6 flex justify-center">
+                <RecordServiceFab variant="inline" onCreated={refresh} />
+              </div>
+            ) : null}
+            {emptyCopy.showEntryAction && showManagerEntry && entryWorkflow ? (
+              <div className="mt-6 flex justify-center">
+                <AddEntryFab entryType={filter} variant="inline" onCreated={refresh} />
+              </div>
+            ) : null}
           </div>
         ) : (
           <ul className="divide-y divide-[var(--border)]">
@@ -131,15 +256,20 @@ export function DailyLedgerPanel() {
                         #{t.index}
                       </span>
                       <StatusBadge status={t.status} />
-                      <span className="rounded-md bg-[var(--muted)] px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-[var(--muted-foreground)]">
-                        {t.type}
-                      </span>
+                      {!providerView ? (
+                        <span className="rounded-md bg-[var(--muted)] px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-[var(--muted-foreground)]">
+                          {t.type}
+                        </span>
+                      ) : null}
                     </div>
                     <p className="text-base font-medium text-[var(--foreground)]">{typeLabel(t)}</p>
                     <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-[var(--muted-foreground)]">
-                      {t.employeeName ? <span>{t.employeeName}</span> : <span>House</span>}
+                      {!providerView && t.employeeName ? <span>{t.employeeName}</span> : null}
+                      {!providerView && !t.employeeName ? <span>House</span> : null}
                       <span className="tabular-nums">{formatTimeLabel(t.createdAt)}</span>
-                      {t.paymentMethod ? (
+                      {t.type === "expense" && t.paymentMethod ? (
+                        <span>{formatExpensePaymentSource(t.paymentMethod) ?? t.paymentMethod}</span>
+                      ) : t.paymentMethod ? (
                         <span className="capitalize">{t.paymentMethod}</span>
                       ) : null}
                     </div>
@@ -199,7 +329,16 @@ export function DailyLedgerPanel() {
         }}
       />
 
-      <AddEntryFab onCreated={() => void load()} />
+      {showRecordService ? (
+        <RecordServiceFab key="record-service" onCreated={refresh} />
+      ) : null}
+      {showManagerEntry && entryWorkflow ? (
+        <AddEntryFab
+          key={filter}
+          entryType={filter}
+          onCreated={refresh}
+        />
+      ) : null}
     </div>
   );
 }
@@ -233,7 +372,11 @@ function mapLedgerRow(r: LedgerRow): LedgerTransaction {
   const idx = r.barber_sequence_index ?? 0;
   const amount = Number(r.amount);
   const paymentMethod =
-    r.payment_method === "cash" || r.payment_method === "transfer" || r.payment_method === "pos"
+    r.payment_method === "cash" ||
+    r.payment_method === "transfer" ||
+    r.payment_method === "pos" ||
+    r.payment_method === "cash_shop" ||
+    r.payment_method === "admin_transfer"
       ? r.payment_method
       : null;
   return {

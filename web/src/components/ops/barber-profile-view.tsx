@@ -3,37 +3,130 @@
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Card, CardContent } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
-import { formatNaira } from "@/lib/format";
-import type { BarberProfile } from "@/lib/ops-types";
+import { formatNaira, formatServicesCount } from "@/lib/format";
+import type { BarberProfile, TeamMemberProfile } from "@/lib/ops-types";
 import { cn } from "@/lib/utils";
 
-export function BarberProfileView({
-  profile,
-  variant = "full",
+function isTeamProfile(p: BarberProfile | TeamMemberProfile): p is TeamMemberProfile {
+  return "role" in p;
+}
+
+function FinanceStat({
+  label,
+  value,
+  valueClassName,
 }: {
-  profile: BarberProfile;
-  variant?: "full" | "embedded";
+  label: string;
+  value: string;
+  valueClassName?: string;
 }) {
   return (
-    <div className={cn("space-y-8", variant === "embedded" && "space-y-6")}>
-      <div
+    <div className="min-w-0 space-y-1">
+      <p className="text-[11px] font-medium uppercase tracking-[0.12em] text-[var(--muted-foreground)]">
+        {label}
+      </p>
+      <p
         className={cn(
-          "flex flex-col gap-6 rounded-[var(--radius-xl)] border border-[var(--border)] bg-[var(--card)] p-6 shadow-[var(--shadow-card)] md:flex-row md:items-start",
-          variant === "embedded" && "rounded-[var(--radius-lg)] p-5",
+          "font-[family-name:var(--font-serif)] text-xl font-semibold leading-tight tracking-tight",
+          valueClassName,
         )}
       >
-        <Avatar className={cn("h-20 w-20", variant === "embedded" && "h-16 w-16")}>
-          <AvatarFallback className="text-lg">{profile.initials}</AvatarFallback>
-        </Avatar>
-        <div className="min-w-0 flex-1 space-y-4">
-          <div>
+        {value}
+      </p>
+    </div>
+  );
+}
+
+function FinanceSummaryCard({
+  title,
+  stats,
+  payoutLabel = "Payout",
+}: {
+  title: string;
+  stats: { revenue: number; services: number; payout: number };
+  payoutLabel?: string;
+}) {
+  return (
+    <Card>
+      <CardContent className="p-5 pt-5">
+        <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
+          {title}
+        </p>
+        <div className="mt-5 grid grid-cols-1 gap-5 sm:grid-cols-3 sm:gap-4">
+          <FinanceStat label="Revenue" value={formatNaira(stats.revenue)} />
+          <FinanceStat
+            label="Services"
+            value={formatServicesCount(stats.services)}
+            valueClassName="text-[var(--foreground)]"
+          />
+          <FinanceStat
+            label={payoutLabel}
+            value={formatNaira(stats.payout)}
+            valueClassName="text-emerald-700 dark:text-emerald-300"
+          />
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function payStructureSummary(profile: BarberProfile | TeamMemberProfile) {
+  const type = profile.salaryType.replace(/_/g, " ");
+  if (isTeamProfile(profile) && profile.fixedSalary != null && profile.fixedSalary > 0) {
+    if (profile.role === "staff") {
+      return `${type} · ${formatNaira(profile.fixedSalary)} / mo`;
+    }
+    return `${profile.commissionPct}% commission · ${type} · ${formatNaira(profile.fixedSalary)} base`;
+  }
+  if (profile.commissionPct > 0) {
+    return `${profile.commissionPct}% commission · ${type}`;
+  }
+  return type;
+}
+
+function ProfileHeaderInner({
+  profile,
+  variant,
+}: {
+  profile: BarberProfile | TeamMemberProfile;
+  variant: "full" | "embedded";
+}) {
+  const team = isTeamProfile(profile);
+
+  return (
+    <div
+      className={cn(
+        "flex flex-col gap-6 rounded-[var(--radius-xl)] border border-[var(--border)] bg-[var(--card)] p-6 shadow-[var(--shadow-card)] md:flex-row md:items-start",
+        variant === "embedded" && "rounded-[var(--radius-lg)] p-5",
+      )}
+    >
+      <Avatar className={cn("h-20 w-20", variant === "embedded" && "h-16 w-16")}>
+        <AvatarFallback className="text-lg">{profile.initials}</AvatarFallback>
+      </Avatar>
+      <div className="min-w-0 flex-1 space-y-4">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
             <h2 className="font-[family-name:var(--font-serif)] text-2xl font-semibold tracking-tight text-[var(--foreground)]">
               {profile.displayName}
             </h2>
-            <p className="mt-1 text-sm text-[var(--muted-foreground)]">
-              {profile.email} · {profile.phone}
-            </p>
+            {team ? (
+              <span className="rounded-full border border-[var(--border)] bg-[var(--muted)] px-2.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-[var(--muted-foreground)]">
+                {profile.role === "barber" ? "Barber" : "Staff"}
+              </span>
+            ) : null}
           </div>
+          <p className="mt-1 text-sm text-[var(--muted-foreground)]">
+            {profile.email} · {profile.phone}
+          </p>
+        </div>
+        {team ? (
+          <div>
+            <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
+              Pay structure
+            </p>
+            <p className="mt-1 text-sm text-[var(--foreground)]">{payStructureSummary(profile)}</p>
+          </div>
+        ) : (
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
               <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
@@ -50,77 +143,66 @@ export function BarberProfileView({
               </p>
             </div>
           </div>
-          {variant === "full" ? (
-            <>
-              <Separator />
-              <div>
-                <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
-                  Bank details
-                </p>
-                <p className="mt-2 text-sm text-[var(--foreground)]">{profile.bankName}</p>
-                <p className="text-sm tabular-nums text-[var(--muted-foreground)]">
-                  {profile.accountNumber} · {profile.accountName}
-                </p>
-              </div>
-            </>
-          ) : null}
-        </div>
-      </div>
-
-      <div className="grid gap-4 md:grid-cols-2">
-        <Card>
-          <CardContent className="p-5 pt-5">
-            <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
-              This month
-            </p>
-            <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
-              <div>
-                <p className="text-[var(--muted-foreground)]">Revenue</p>
-                <p className="mt-0.5 font-semibold tabular-nums">{formatNaira(profile.monthStats.revenue)}</p>
-              </div>
-              <div>
-                <p className="text-[var(--muted-foreground)]">Payout</p>
-                <p className="mt-0.5 font-semibold tabular-nums text-emerald-700 dark:text-emerald-300">
-                  {formatNaira(profile.monthStats.payout)}
-                </p>
-              </div>
-              <div>
-                <p className="text-[var(--muted-foreground)]">Services</p>
-                <p className="mt-0.5 font-medium tabular-nums">{formatNaira(profile.monthStats.services)}</p>
-              </div>
-              <div>
-                <p className="text-[var(--muted-foreground)]">Product</p>
-                <p className="mt-0.5 font-medium tabular-nums">{formatNaira(profile.monthStats.product)}</p>
-              </div>
+        )}
+        {variant === "full" ? (
+          <>
+            <Separator />
+            <div>
+              <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
+                Bank details
+              </p>
+              <p className="mt-2 text-sm text-[var(--foreground)]">{profile.bankName}</p>
+              <p className="text-sm tabular-nums text-[var(--muted-foreground)]">
+                {profile.accountNumber} · {profile.accountName}
+              </p>
             </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-5 pt-5">
-            <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
-              All-time
-            </p>
-            <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
-              <div>
-                <p className="text-[var(--muted-foreground)]">Revenue</p>
-                <p className="mt-0.5 font-semibold tabular-nums">{formatNaira(profile.allTimeStats.revenue)}</p>
-              </div>
-              <div>
-                <p className="text-[var(--muted-foreground)]">Payout</p>
-                <p className="mt-0.5 font-semibold tabular-nums">{formatNaira(profile.allTimeStats.payout)}</p>
-              </div>
-              <div>
-                <p className="text-[var(--muted-foreground)]">Services</p>
-                <p className="mt-0.5 font-medium tabular-nums">{formatNaira(profile.allTimeStats.services)}</p>
-              </div>
-              <div>
-                <p className="text-[var(--muted-foreground)]">Product</p>
-                <p className="mt-0.5 font-medium tabular-nums">{formatNaira(profile.allTimeStats.product)}</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+          </>
+        ) : null}
       </div>
     </div>
+  );
+}
+
+export function TeamMemberProfileView({
+  profile,
+  variant = "full",
+}: {
+  profile: TeamMemberProfile;
+  variant?: "full" | "embedded";
+}) {
+  const payoutLabel =
+    profile.role === "staff" && profile.salaryType.includes("fixed") ? "Salary" : "Payout";
+
+  return (
+    <div className={cn("space-y-8", variant === "embedded" && "space-y-6")}>
+      <ProfileHeaderInner profile={profile} variant={variant} />
+      <div className="grid gap-4 lg:grid-cols-2">
+        <FinanceSummaryCard
+          title="This month"
+          stats={profile.monthStats}
+          payoutLabel={payoutLabel}
+        />
+        <FinanceSummaryCard
+          title="All-time"
+          stats={profile.allTimeStats}
+          payoutLabel={payoutLabel}
+        />
+      </div>
+    </div>
+  );
+}
+
+export function BarberProfileView({
+  profile,
+  variant = "full",
+}: {
+  profile: BarberProfile;
+  variant?: "full" | "embedded";
+}) {
+  return (
+    <TeamMemberProfileView
+      profile={{ ...profile, role: "barber", fixedSalary: null }}
+      variant={variant}
+    />
   );
 }

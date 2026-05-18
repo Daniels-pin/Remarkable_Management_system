@@ -14,28 +14,31 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/components/providers/auth-provider";
+import { FinancialMonthStatusPill } from "@/components/ops/financial-month-status-pill";
 import {
   ApiError,
+  closeFinancialMonth,
   listCommissionStatements,
   listFinancialMonths,
   markCommissionStatementPaid,
   type CommissionStatementRow,
   type FinancialMonthRow,
 } from "@/lib/api";
+import { ExpenseSourceBreakdownCard } from "@/components/ops/expense-source-breakdown";
+import {
+  financialMonthStatusLabel,
+  monthLabel,
+  normalizeFinancialMonthState,
+} from "@/lib/financial-month";
 import { formatNaira } from "@/lib/format";
+import type { ExpenseSourceBreakdown } from "@/lib/ops-types";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
-
-function monthLabel(year: number, month: number) {
-  return new Date(year, month - 1).toLocaleString("default", {
-    month: "long",
-    year: "numeric",
-  });
-}
 
 export function FinanceArchive() {
   const { session } = useAuth();
   const isAdmin = session?.role === "admin";
+  const canCloseMonth = session?.role === "admin" || session?.role === "manager";
 
   const [open, setOpen] = React.useState(false);
   const [active, setActive] = React.useState<FinancialMonthRow | null>(null);
@@ -43,6 +46,7 @@ export function FinanceArchive() {
   const [months, setMonths] = React.useState<FinancialMonthRow[]>([]);
   const [statements, setStatements] = React.useState<CommissionStatementRow[]>([]);
   const [loading, setLoading] = React.useState(true);
+  const [closing, setClosing] = React.useState(false);
 
   const [markOpen, setMarkOpen] = React.useState(false);
   const [markTarget, setMarkTarget] = React.useState<CommissionStatementRow | null>(null);
@@ -83,17 +87,34 @@ export function FinanceArchive() {
     }
     const unpaid = activeStatements.some((s) => s.payout_state !== "paid");
     if (!unpaid) return { label: "Paid out", tone: "text-emerald-700 dark:text-emerald-300" };
-    if (active.state === "paid_locked") {
+    if (normalizeFinancialMonthState(active.state) === "locked") {
       return { label: "Locked · unpaid items remain", tone: "text-rose-700 dark:text-rose-300" };
     }
     return { label: "Unpaid items pending", tone: "text-amber-800 dark:text-amber-200" };
   }, [active, activeStatements]);
 
-  const lockLabel = React.useMemo(() => {
+  const periodSubline = React.useMemo(() => {
     if (!active) return "—";
-    if (active.state === "open") return "Open";
-    if (active.state === "closed") return "Closed";
-    return "Paid locked";
+    const state = normalizeFinancialMonthState(active.state);
+    if (state === "open") {
+      return active.is_current ? "Current operational month" : "Open";
+    }
+    if (state === "grace_period") {
+      if (active.grace_ends_at) {
+        return `Grace until ${new Date(active.grace_ends_at).toLocaleDateString("en-NG", {
+          month: "short",
+          day: "numeric",
+        })}`;
+      }
+      if (active.closed_at) {
+        return `Entered grace ${new Date(active.closed_at).toLocaleDateString("en-NG")}`;
+      }
+      return "Grace period";
+    }
+    if (active.locked_at) {
+      return `Locked ${new Date(active.locked_at).toLocaleDateString("en-NG")}`;
+    }
+    return "Historical record";
   }, [active]);
 
   const totalCommission = React.useMemo(() => {
@@ -103,6 +124,69 @@ export function FinanceArchive() {
   const unpaidCount = React.useMemo(() => {
     return activeStatements.filter((s) => s.payout_state !== "paid").length;
   }, [activeStatements]);
+
+  const activeExpenseSources = React.useMemo((): ExpenseSourceBreakdown => {
+    if (!active?.expense_sources) {
+      return {
+        shopCash: 0,
+        adminTransfer: 0,
+        total: 0,
+        operationalShopCash: 0,
+        operationalAdminTransfer: 0,
+        operationalTotal: 0,
+      };
+    }
+    const shopCash = Number(active.expense_sources.shop_cash) || 0;
+    const adminTransfer = Number(active.expense_sources.admin_transfer) || 0;
+    const total = Number(active.expense_sources.total) || 0;
+    const operationalShopCash =
+      Number(active.expense_sources.operational_shop_cash) || shopCash;
+    const operationalAdminTransfer =
+      Number(active.expense_sources.operational_admin_transfer) || adminTransfer;
+    const operationalTotal =
+      Number(active.expense_sources.operational_total) || total;
+    return {
+      shopCash,
+      adminTransfer,
+      total,
+      operationalShopCash,
+      operationalAdminTransfer,
+      operationalTotal,
+    };
+  }, [active]);
+
+  const revenueFor = (m: FinancialMonthRow) => {
+    if (m.total_revenue != null) return Number(m.total_revenue) || 0;
+    const snap = m.snapshot as { total_revenue?: string } | undefined;
+    if (snap?.total_revenue) return Number(snap.total_revenue) || 0;
+    return null;
+  };
+
+  const expensesFor = (m: FinancialMonthRow) => {
+    if (m.total_expenses != null) return Number(m.total_expenses) || 0;
+    if (m.expense_sources?.total) return Number(m.expense_sources.total) || 0;
+    return null;
+  };
+
+  const handleCloseMonth = async () => {
+    if (!active || !canCloseMonth) return;
+    if (normalizeFinancialMonthState(active.state) !== "open" || !active.is_current) {
+      toast.error("Only the current open month can be closed early.");
+      return;
+    }
+    setClosing(true);
+    try {
+      await closeFinancialMonth(active.id);
+      toast.success("Month moved into grace period.");
+      await load();
+      setOpen(false);
+    } catch (e) {
+      if (e instanceof ApiError) toast.error(e.message);
+      else toast.error("Could not close month.");
+    } finally {
+      setClosing(false);
+    }
+  };
 
   const beginMarkPaid = (row: CommissionStatementRow) => {
     setMarkTarget(row);
@@ -144,8 +228,8 @@ export function FinanceArchive() {
           Financial archive
         </h2>
         <p className="max-w-2xl text-sm leading-relaxed text-[var(--muted-foreground)]">
-          Month-by-month posture with payout and lock signals. Select a month for a calm,
-          accounting-style breakdown.
+          Month-by-month posture with automatic open → grace → locked transitions. Select a
+          period for revenue, expenses, payouts, and reconciliation posture.
         </p>
       </header>
 
@@ -157,87 +241,85 @@ export function FinanceArchive() {
         <div className="space-y-6">
           <div className="rounded-[var(--radius-xl)] border border-dashed border-[var(--border)] bg-[var(--card)] px-6 py-14 text-center shadow-[var(--shadow-card)]">
             <p className="font-[family-name:var(--font-serif)] text-lg font-medium text-[var(--foreground)]">
-              No financial data available for this period
+              No financial periods yet
             </p>
             <p className="mx-auto mt-2 max-w-lg text-sm leading-relaxed text-[var(--muted-foreground)]">
-              Closed months and payout status will populate automatically after finance locks each
-              period. Nothing is invented here—this grid stays quiet until real aggregates exist.
+              The active month is created automatically. Archive cards appear as soon as
+              operational data exists for each period.
             </p>
-          </div>
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            {[0, 1, 2, 3].map((slot) => (
-              <div
-                key={slot}
-                className="rounded-[var(--radius-lg)] border border-[var(--border)]/70 bg-[var(--card)]/50 p-5 shadow-[var(--shadow-card)]"
-              >
-                <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
-                  Month card
-                </p>
-                <p className="mt-6 font-[family-name:var(--font-serif)] text-lg font-semibold text-[var(--muted-foreground)]">
-                  —
-                </p>
-                <p className="mt-1 text-xs text-[var(--muted-foreground)]">Awaiting first close</p>
-                <div className="mt-4 space-y-2 border-t border-[var(--border)]/80 pt-3 text-xs text-[var(--muted-foreground)]">
-                  <p>Revenue · —</p>
-                  <p>Expenses · —</p>
-                  <p>Payout · —</p>
-                </div>
-              </div>
-            ))}
           </div>
         </div>
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {months.map((m) => (
-            <button
-              key={m.id}
-              type="button"
-              onClick={() => {
-                setActive(m);
-                setOpen(true);
-              }}
-              className={cn(
-                "rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--card)] p-5 text-left shadow-[var(--shadow-card)] transition-[transform,box-shadow] hover:-translate-y-0.5 hover:shadow-[var(--shadow-elevated)]",
-                m.state === "paid_locked" && "opacity-95",
-              )}
-            >
-              <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
-                {monthLabel(m.year, m.month)}
-              </p>
-              <p className="mt-3 font-[family-name:var(--font-serif)] text-lg font-semibold tabular-nums text-[var(--foreground)]">
-                {m.state.replace(/_/g, " ")}
-              </p>
-              <p className="mt-1 text-xs text-[var(--muted-foreground)]">
-                {m.closed_at ? `Closed ${new Date(m.closed_at).toLocaleDateString("en-NG")}` : "Not closed yet"}
-              </p>
-              <div className="mt-4 space-y-1.5 border-t border-[var(--border)] pt-3 text-xs">
-                <div className="flex justify-between gap-2 pt-1">
-                  <span className="text-[var(--muted-foreground)]">Payout</span>
-                  <span className="text-[var(--foreground)]">
-                    {statements.some((s) => s.financial_month_id === m.id)
-                      ? statements
-                          .filter((s) => s.financial_month_id === m.id)
-                          .some((s) => s.payout_state !== "paid")
-                        ? "Unpaid items"
-                        : "Paid out"
-                      : "—"}
-                  </span>
+          {months.map((m) => {
+            const state = normalizeFinancialMonthState(m.state);
+            const revenue = revenueFor(m);
+            const expenses = expensesFor(m);
+            return (
+              <button
+                key={m.id}
+                type="button"
+                onClick={() => {
+                  setActive(m);
+                  setOpen(true);
+                }}
+                className={cn(
+                  "rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--card)] p-5 text-left shadow-[var(--shadow-card)] transition-[transform,box-shadow] hover:-translate-y-0.5 hover:shadow-[var(--shadow-elevated)]",
+                  state === "locked" && "opacity-95",
+                  m.is_current && "ring-1 ring-emerald-500/25",
+                )}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
+                    {monthLabel(m.year, m.month)}
+                  </p>
+                  {m.is_current ? (
+                    <span className="text-[10px] font-medium uppercase tracking-wider text-emerald-700 dark:text-emerald-300">
+                      Active
+                    </span>
+                  ) : null}
                 </div>
-                <div className="flex justify-between gap-2">
-                  <span className="text-[var(--muted-foreground)]">Lock</span>
-                  <span
-                    className={
-                      m.state === "paid_locked"
-                        ? "text-emerald-700 dark:text-emerald-300"
-                        : "text-amber-800 dark:text-amber-200"
-                    }
-                  >
-                    {m.state === "paid_locked" ? "Locked" : m.state}
-                  </span>
+                <div className="mt-3 flex items-center gap-2">
+                  <FinancialMonthStatusPill state={m.state} />
                 </div>
-              </div>
-            </button>
-          ))}
+                <p className="mt-2 text-xs text-[var(--muted-foreground)]">
+                  {state === "grace_period" && m.grace_ends_at
+                    ? `Grace until ${new Date(m.grace_ends_at).toLocaleDateString("en-NG")}`
+                    : state === "locked" && m.locked_at
+                      ? `Locked ${new Date(m.locked_at).toLocaleDateString("en-NG")}`
+                      : state === "open"
+                        ? "Operational"
+                        : "—"}
+                </p>
+                <div className="mt-4 space-y-1.5 border-t border-[var(--border)] pt-3 text-xs">
+                  <div className="flex justify-between gap-2">
+                    <span className="text-[var(--muted-foreground)]">Revenue</span>
+                    <span className="tabular-nums text-[var(--foreground)]">
+                      {revenue != null ? formatNaira(revenue) : "—"}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-2">
+                    <span className="text-[var(--muted-foreground)]">Expenses</span>
+                    <span className="tabular-nums text-[var(--foreground)]">
+                      {expenses != null ? formatNaira(expenses) : "—"}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-2 pt-1">
+                    <span className="text-[var(--muted-foreground)]">Payout</span>
+                    <span className="text-[var(--foreground)]">
+                      {statements.some((s) => s.financial_month_id === m.id)
+                        ? statements
+                            .filter((s) => s.financial_month_id === m.id)
+                            .some((s) => s.payout_state !== "paid")
+                          ? "Unpaid items"
+                          : "Paid out"
+                        : "—"}
+                    </span>
+                  </div>
+                </div>
+              </button>
+            );
+          })}
         </div>
       )}
 
@@ -245,21 +327,26 @@ export function FinanceArchive() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
-              {active
-                ? monthLabel(active.year, active.month)
-                : "Month"}
+              {active ? monthLabel(active.year, active.month) : "Month"}
             </DialogTitle>
           </DialogHeader>
           <DialogBody>
             {active ? (
               <div className="space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <FinancialMonthStatusPill state={active.state} />
+                  <p className="text-xs text-[var(--muted-foreground)]">{periodSubline}</p>
+                </div>
+
                 <div className="grid gap-3 sm:grid-cols-3">
                   <Card>
                     <CardContent className="space-y-1 p-4 pt-4">
                       <p className="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">
-                        Month state
+                        Revenue
                       </p>
-                      <p className="text-lg font-semibold tabular-nums">{lockLabel}</p>
+                      <p className="text-lg font-semibold tabular-nums">
+                        {revenueFor(active) != null ? formatNaira(revenueFor(active)!) : "—"}
+                      </p>
                     </CardContent>
                   </Card>
                   <Card>
@@ -281,10 +368,35 @@ export function FinanceArchive() {
                     </CardContent>
                   </Card>
                 </div>
+
                 <p className="text-sm text-[var(--muted-foreground)]">
-                  Payout status:{" "}
-                  <span className={cn("font-medium", payoutState.tone)}>{payoutState.label}</span>.
+                  Status:{" "}
+                  <span className="font-medium text-[var(--foreground)]">
+                    {financialMonthStatusLabel(active.state)}
+                  </span>
+                  {" · "}
+                  Payout: <span className={cn("font-medium", payoutState.tone)}>{payoutState.label}</span>
                 </p>
+
+                {canCloseMonth &&
+                active.is_current &&
+                normalizeFinancialMonthState(active.state) === "open" ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="rounded-full"
+                    disabled={closing}
+                    onClick={() => void handleCloseMonth()}
+                  >
+                    {closing ? "Closing…" : "Close month early (grace period)"}
+                  </Button>
+                ) : null}
+
+                <ExpenseSourceBreakdownCard
+                  sources={activeExpenseSources}
+                  variant="admin"
+                  compact
+                />
 
                 <div className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--card)]">
                   <div className="flex items-center justify-between gap-3 border-b border-[var(--border)] px-4 py-3">
@@ -319,7 +431,10 @@ export function FinanceArchive() {
                                 size="sm"
                                 variant="outline"
                                 className="rounded-full"
-                                disabled={s.payout_state === "paid"}
+                                disabled={
+                                  s.payout_state === "paid" ||
+                                  normalizeFinancialMonthState(active.state) === "locked"
+                                }
                                 onClick={() => beginMarkPaid(s)}
                               >
                                 Mark paid

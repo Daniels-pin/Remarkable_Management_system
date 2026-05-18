@@ -1,9 +1,16 @@
 "use client";
 
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import * as React from "react";
 
 import { useAuth } from "@/components/providers/auth-provider";
+import {
+  canAccessBarbershopFinance,
+  getDeniedBarbershopPath,
+  isBarbershopPathAllowed,
+} from "@/lib/barbershop-access";
+import { isManagerUp } from "@/lib/roles";
+import { getPostAuthPath } from "@/lib/routing";
 
 function LoadingScreen() {
   return (
@@ -50,7 +57,7 @@ export function GuestGuard({ children }: { children: React.ReactNode }) {
     if (session.must_change_password) {
       router.replace("/set-password");
     } else {
-      router.replace("/modules");
+      router.replace(getPostAuthPath(session.role));
     }
   }, [session, loading, router]);
 
@@ -75,12 +82,85 @@ export function RequirePasswordChange({
       return;
     }
     if (!session.must_change_password) {
-      router.replace("/modules");
+      router.replace(getPostAuthPath(session.role));
     }
   }, [session, loading, router]);
 
   if (loading) return <LoadingScreen />;
   if (!session) return <LoadingScreen />;
   if (!session.must_change_password) return <LoadingScreen />;
+  return <>{children}</>;
+}
+
+/** Barbershop management routes: managers and admins only. */
+export function RequireManagerOrAdmin({ children }: { children: React.ReactNode }) {
+  const { session, loading } = useAuth();
+  const router = useRouter();
+
+  React.useEffect(() => {
+    if (loading) return;
+    if (!session) return;
+    if (!isManagerUp(session.role)) {
+      router.replace(getDeniedBarbershopPath(session.role));
+    }
+  }, [session, loading, router]);
+
+  if (loading) return <LoadingScreen />;
+  if (!session || !isManagerUp(session.role)) return <LoadingScreen />;
+  return <>{children}</>;
+}
+
+/** Finance archive and commission history — barbers and management only. */
+export function RequireBarbershopFinance({ children }: { children: React.ReactNode }) {
+  const { session, loading } = useAuth();
+  const router = useRouter();
+
+  React.useEffect(() => {
+    if (loading) return;
+    if (!session) return;
+    if (!canAccessBarbershopFinance(session.role)) {
+      router.replace(getDeniedBarbershopPath(session.role));
+    }
+  }, [session, loading, router]);
+
+  if (loading) return <LoadingScreen />;
+  if (!session || !canAccessBarbershopFinance(session.role)) return <LoadingScreen />;
+  return <>{children}</>;
+}
+
+/** Barbershop routes with role-specific path rules (finance, management, etc.). */
+export function RequireBarbershopRoute({ children }: { children: React.ReactNode }) {
+  const { session, loading } = useAuth();
+  const router = useRouter();
+  const pathname = usePathname();
+
+  React.useEffect(() => {
+    if (loading) return;
+    if (!session) return;
+    if (!isBarbershopPathAllowed(pathname, session.role)) {
+      router.replace(getDeniedBarbershopPath(session.role));
+    }
+  }, [session, loading, pathname, router]);
+
+  if (loading) return <LoadingScreen />;
+  if (!session || !isBarbershopPathAllowed(pathname, session.role)) return <LoadingScreen />;
+  return <>{children}</>;
+}
+
+/** Module selector: owner-level route; non-admins are sent to their workspace. */
+export function RequireAdmin({ children }: { children: React.ReactNode }) {
+  const { session, loading } = useAuth();
+  const router = useRouter();
+
+  React.useEffect(() => {
+    if (loading) return;
+    if (!session) return;
+    if (session.role !== "admin") {
+      router.replace(getPostAuthPath(session.role));
+    }
+  }, [session, loading, router]);
+
+  if (loading) return <LoadingScreen />;
+  if (!session || session.role !== "admin") return <LoadingScreen />;
   return <>{children}</>;
 }

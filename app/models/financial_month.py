@@ -30,6 +30,7 @@ class FinancialMonth(Base, TimestampMixin):
     closed_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
+    grace_ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     paid_locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     paid_locked_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
@@ -37,6 +38,12 @@ class FinancialMonth(Base, TimestampMixin):
 
     reopen_events: Mapped[list[MonthReopenEvent]] = relationship(
         "MonthReopenEvent", back_populates="financial_month", cascade="all, delete-orphan"
+    )
+    snapshot: Mapped["FinancialMonthSnapshot | None"] = relationship(
+        "FinancialMonthSnapshot",
+        back_populates="financial_month",
+        uselist=False,
+        cascade="all, delete-orphan",
     )
 
 

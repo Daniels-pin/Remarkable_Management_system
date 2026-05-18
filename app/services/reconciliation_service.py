@@ -24,7 +24,7 @@ from app.models.ledger import LedgerEntry
 from app.models.reconciliation_timeline import ReconciliationTimelineEvent
 from app.models.user import User
 from app.services import audit_service, notification_service
-from app.services.financial_month_util import require_open_financial_month
+from app.services.financial_month_util import require_grace_or_open_month_for_reconciliation
 
 
 def _timeline(
@@ -63,7 +63,11 @@ def _day_service_entries(
 
 
 def get_or_create_daily_summary(
-    db: Session, *, barber_user_id: uuid.UUID, business_day: date
+    db: Session,
+    *,
+    barber_user_id: uuid.UUID,
+    business_day: date,
+    actor: User | None = None,
 ) -> BarberDailySummary:
     row = (
         db.query(BarberDailySummary)
@@ -75,7 +79,19 @@ def get_or_create_daily_summary(
     )
     if row:
         return row
-    fm = require_open_financial_month(db, business_day)
+
+    if actor is not None:
+        fm = require_grace_or_open_month_for_reconciliation(db, business_day, actor)
+    else:
+        from app.services.financial_month_util import get_financial_month_for_calendar_date
+
+        fm = get_financial_month_for_calendar_date(db, business_day)
+        if fm is None:
+            raise ValidationAppError(
+                "No financial month exists for this calendar month.",
+                code="FINANCIAL_MONTH_MISSING",
+            )
+
     row = BarberDailySummary(
         barber_user_id=barber_user_id,
         financial_month_id=fm.id,
@@ -105,8 +121,9 @@ def manager_propose_daily_summary(
     if manager.role not in {UserRole.MANAGER, UserRole.ADMIN}:
         raise ForbiddenError("Managers or admins only.", code="FORBIDDEN")
 
+    require_grace_or_open_month_for_reconciliation(db, business_day, manager)
     summary = get_or_create_daily_summary(
-        db, barber_user_id=barber_user_id, business_day=business_day
+        db, barber_user_id=barber_user_id, business_day=business_day, actor=manager
     )
     entries = _day_service_entries(db, barber_user_id, business_day)
 
@@ -207,8 +224,9 @@ def manager_revise_after_dispute(
 ) -> BarberDailySummary:
     if manager.role not in {UserRole.MANAGER, UserRole.ADMIN}:
         raise ForbiddenError("Managers or admins only.", code="FORBIDDEN")
+    require_grace_or_open_month_for_reconciliation(db, business_day, manager)
     summary = get_or_create_daily_summary(
-        db, barber_user_id=barber_user_id, business_day=business_day
+        db, barber_user_id=barber_user_id, business_day=business_day, actor=manager
     )
     if summary.status != BarberDailySummaryStatus.DISPUTED:
         raise ConflictError(
@@ -284,9 +302,12 @@ def barber_accept_summary(
     ip_address: str | None,
     business_day: date,
 ) -> BarberDailySummary:
-    if barber.role != UserRole.BARBER:
-        raise ForbiddenError("Barbers only.", code="NOT_BARBER")
-    summary = get_or_create_daily_summary(db, barber_user_id=barber.id, business_day=business_day)
+    if barber.role not in (UserRole.BARBER, UserRole.STAFF):
+        raise ForbiddenError("Service providers only.", code="NOT_SERVICE_PROVIDER")
+    require_grace_or_open_month_for_reconciliation(db, business_day, barber)
+    summary = get_or_create_daily_summary(
+        db, barber_user_id=barber.id, business_day=business_day, actor=barber
+    )
     if summary.status != BarberDailySummaryStatus.AWAITING_BARBER_REVIEW:
         raise ConflictError(
             "No reconciliation is awaiting your review.", code="SUMMARY_WRONG_STATE"
@@ -332,13 +353,16 @@ def barber_reject_summary(
     business_day: date,
     reason: str,
 ) -> BarberDailySummary:
-    if barber.role != UserRole.BARBER:
-        raise ForbiddenError("Barbers only.", code="NOT_BARBER")
+    if barber.role not in (UserRole.BARBER, UserRole.STAFF):
+        raise ForbiddenError("Service providers only.", code="NOT_SERVICE_PROVIDER")
     if not reason.strip():
         raise ValidationAppError(
             "A rejection reason is required.", code="REJECTION_REASON_REQUIRED"
         )
-    summary = get_or_create_daily_summary(db, barber_user_id=barber.id, business_day=business_day)
+    require_grace_or_open_month_for_reconciliation(db, business_day, barber)
+    summary = get_or_create_daily_summary(
+        db, barber_user_id=barber.id, business_day=business_day, actor=barber
+    )
     if summary.status != BarberDailySummaryStatus.AWAITING_BARBER_REVIEW:
         raise ConflictError(
             "No reconciliation is awaiting your review.", code="SUMMARY_WRONG_STATE"

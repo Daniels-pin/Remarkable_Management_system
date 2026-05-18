@@ -25,8 +25,18 @@ def require_barber(user: User) -> None:
     require_roles(user, UserRole.BARBER)
 
 
+def require_service_provider(user: User) -> None:
+    """Barbers and service staff who record their own ledger lines."""
+    require_roles(user, UserRole.BARBER, UserRole.STAFF)
+
+
 def require_staff_like(user: User) -> None:
     require_roles(user, UserRole.BARBER, UserRole.STAFF, UserRole.MANAGER, UserRole.ADMIN)
+
+
+def require_barbershop_finance(user: User) -> None:
+    """Finance routes and APIs — barbers (own statements) and management; not staff."""
+    require_roles(user, UserRole.ADMIN, UserRole.MANAGER, UserRole.BARBER)
 
 
 def can_impersonate(admin: User) -> bool:

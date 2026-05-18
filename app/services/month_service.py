@@ -1,5 +1,10 @@
-"""Financial month lifecycle — stub for close / paid / reopen orchestration."""
+"""Re-export month lifecycle helpers (legacy import path)."""
 
-
-def placeholder_month_note() -> str:
-    return "Implement close → commission snapshots → paid_locked transitions here."
+from app.services.month_lifecycle_service import (  # noqa: F401
+    GRACE_PERIOD_DAYS,
+    begin_grace_period,
+    calendar_today,
+    lock_financial_month,
+    manual_close_month,
+    process_lifecycle_transitions,
+)

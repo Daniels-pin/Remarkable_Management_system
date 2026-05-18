@@ -4,7 +4,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from app.models.enums import LedgerEntryType, PaymentMethod
+from app.models.enums import ExpensePaymentSource, LedgerEntryType, PaymentMethod
 
 
 class LedgerEntryCreateService(BaseModel):
@@ -31,5 +31,5 @@ class LedgerEntryCreateExpense(BaseModel):
     occurred_at: datetime
     expense_category_id: UUID
     amount: Decimal = Field(..., gt=0)
-    payment_method: PaymentMethod | None = None
+    payment_method: ExpensePaymentSource
     note: str | None = None

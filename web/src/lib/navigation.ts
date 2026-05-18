@@ -5,8 +5,7 @@ import {
   CreditCard,
   LayoutDashboard,
   Receipt,
-  RefreshCw,
-  Scissors,
+  UsersRound,
   UserCircle,
   Users,
 } from "lucide-react";
@@ -22,7 +21,9 @@ export type NavItem = {
 };
 
 const managerUp: UserRole[] = ["admin", "manager"];
-const staffOps: UserRole[] = ["admin", "manager", "staff", "barber"];
+const employeeOps: UserRole[] = ["admin", "manager", "staff", "barber"];
+/** Commission archives and shop financial months — not for operational staff. */
+const barbershopFinance: UserRole[] = ["admin", "manager", "barber"];
 
 export const barbershopNav: NavItem[] = [
   {
@@ -34,19 +35,13 @@ export const barbershopNav: NavItem[] = [
     label: "Daily Ledger",
     href: "/barbershop/daily-ledger",
     icon: BookOpen,
-    roles: staffOps,
+    roles: employeeOps,
   },
   {
-    label: "Barbers",
-    href: "/barbershop/barbers",
-    icon: Scissors,
-    roles: staffOps,
-  },
-  {
-    label: "Reconciliation",
-    href: "/barbershop/reconciliation",
-    icon: RefreshCw,
-    roles: staffOps,
+    label: "Team",
+    href: "/barbershop/team",
+    icon: UsersRound,
+    roles: managerUp,
   },
   {
     label: "Expenses",
@@ -58,7 +53,7 @@ export const barbershopNav: NavItem[] = [
     label: "Finance",
     href: "/barbershop/finance",
     icon: CreditCard,
-    roles: managerUp,
+    roles: barbershopFinance,
   },
   {
     label: "Users",

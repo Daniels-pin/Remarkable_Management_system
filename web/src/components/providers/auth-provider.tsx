@@ -10,7 +10,7 @@ import { ApiError, getSession, login as apiLogin, logout as apiLogout } from "@/
 type AuthState = {
   session: SessionInfo | null;
   loading: boolean;
-  refresh: () => Promise<void>;
+  refresh: () => Promise<SessionInfo | null>;
   login: (username: string, password: string) => Promise<SessionInfo>;
   logout: () => Promise<void>;
   warnAtSeconds: number;
@@ -28,13 +28,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const s = await getSession();
       setSession(s);
+      return s;
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) {
         setSession(null);
-        return;
+        return null;
       }
       console.error(e);
       setSession(null);
+      return null;
     } finally {
       setLoading(false);
     }

@@ -1,5 +1,6 @@
 "use client";
 
+import { RequireBarbershopRoute } from "@/components/auth/guards";
 import { OpsNotificationsProvider } from "@/components/ops/ops-notifications-context";
 
 export default function BarbershopSectionLayout({
@@ -7,5 +8,9 @@ export default function BarbershopSectionLayout({
 }: {
   children: React.ReactNode;
 }) {
-  return <OpsNotificationsProvider>{children}</OpsNotificationsProvider>;
+  return (
+    <RequireBarbershopRoute>
+      <OpsNotificationsProvider>{children}</OpsNotificationsProvider>
+    </RequireBarbershopRoute>
+  );
 }

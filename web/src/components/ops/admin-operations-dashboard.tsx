@@ -8,16 +8,19 @@ import { SummaryMetricCard } from "@/components/ops/summary-metric-card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { ApiError, getOperationsSummary } from "@/lib/api";
 import { formatNaira } from "@/lib/format";
+import { mapOperationsSummary } from "@/lib/operations-analytics";
 import {
   EMPTY_FINANCIAL_SNAPSHOT,
   INITIAL_ACTIVITY,
   INITIAL_APPROVALS,
   INITIAL_MANAGER_LOGS,
   INITIAL_RECONCILIATION_ALERTS,
-  rangeFactor,
-  scaleFinancials,
 } from "@/lib/ops-initial-state";
+import type { FinancialSnapshot } from "@/lib/ops-types";
+import { ExpenseSourceBreakdownCard } from "@/components/ops/expense-source-breakdown";
+import { toast } from "sonner";
 
 type Preset = "today" | "week" | "month" | "year" | "all" | "custom";
 
@@ -80,22 +83,37 @@ export function AdminOperationsDashboard() {
   });
   const [to, setTo] = React.useState(() => new Date().toISOString().slice(0, 10));
 
-  const factor = React.useMemo(() => {
-    if (preset !== "custom") return rangeFactor(preset);
-    const a = new Date(from).getTime();
-    const b = new Date(to).getTime();
-    const days = Math.max(1, Math.round((b - a) / 86400000));
-    return rangeFactor("custom", days);
+  const [current, setCurrent] = React.useState<FinancialSnapshot>(EMPTY_FINANCIAL_SNAPSHOT);
+  const [allTime, setAllTime] = React.useState<FinancialSnapshot>(EMPTY_FINANCIAL_SNAPSHOT);
+  const [analyticsLoading, setAnalyticsLoading] = React.useState(true);
+
+  const loadAnalytics = React.useCallback(async () => {
+    setAnalyticsLoading(true);
+    try {
+      const rangePreset = preset === "custom" ? "custom" : preset;
+      const [periodRes, allRes] = await Promise.all([
+        getOperationsSummary({
+          preset: rangePreset,
+          from: preset === "custom" ? from : undefined,
+          to: preset === "custom" ? to : undefined,
+        }),
+        getOperationsSummary({ preset: "all" }),
+      ]);
+      setCurrent(mapOperationsSummary(periodRes));
+      setAllTime(mapOperationsSummary(allRes));
+    } catch (e) {
+      if (e instanceof ApiError) toast.error(e.message);
+      else toast.error("Could not load operations summary.");
+      setCurrent(EMPTY_FINANCIAL_SNAPSHOT);
+      setAllTime(EMPTY_FINANCIAL_SNAPSHOT);
+    } finally {
+      setAnalyticsLoading(false);
+    }
   }, [preset, from, to]);
 
-  const current = React.useMemo(
-    () => scaleFinancials(EMPTY_FINANCIAL_SNAPSHOT, factor),
-    [factor],
-  );
-  const allTime = React.useMemo(
-    () => scaleFinancials(EMPTY_FINANCIAL_SNAPSHOT, rangeFactor("all")),
-    [],
-  );
+  React.useEffect(() => {
+    queueMicrotask(() => void loadAnalytics());
+  }, [loadAnalytics]);
 
   const noFinancialActivity =
     current.totalRevenue === 0 &&
@@ -169,7 +187,9 @@ export function AdminOperationsDashboard() {
             Selected range
           </h3>
           <span className="text-xs text-[var(--muted-foreground)]">
-            No financial data available for this period until ledger entries exist.
+            {analyticsLoading
+              ? "Loading ledger aggregates…"
+              : "Totals reflect posted services, sales, and expenses."}
           </span>
         </div>
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -208,25 +228,34 @@ export function AdminOperationsDashboard() {
             label="Total expenses"
             value={formatNaira(current.totalExpenses)}
             tone="negative"
+            hint="Operational spend plus salary & commission"
           />
           <SummaryMetricCard
-            label="Operational expenses"
+            label="Shop expenses"
             value={formatNaira(current.operationalExpenses)}
+            hint="Fuel, rent, supplies, and other operational costs"
           />
           <SummaryMetricCard
-            label="Payroll & commissions"
+            label="Salary & commission"
             value={formatNaira(current.payrollCommission)}
+            hint="Payroll and payout accounting"
           />
           <SummaryMetricCard
             label="All-time net (reference)"
             value={formatNaira(allTime.netProfit)}
-            hint="Rolls up only after historical months are closed in finance."
+            hint="Owner-level roll-up across all posted history."
             tone="muted"
           />
         </div>
       </section>
 
       <section className="grid gap-6 lg:grid-cols-3">
+        <ExpenseSourceBreakdownCard
+          sources={current.expenseSources}
+          variant="admin"
+          payrollCommission={current.payrollCommission}
+          className="lg:col-span-1"
+        />
         <Card className="border-[var(--border)]/90 lg:col-span-2">
           <CardContent className="p-6 pt-6">
             <div className="mb-6 flex flex-col gap-1 border-b border-[var(--border)] pb-5 sm:flex-row sm:items-end sm:justify-between">

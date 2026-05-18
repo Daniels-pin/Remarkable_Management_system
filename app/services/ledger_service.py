@@ -20,9 +20,13 @@ from app.models.enums import (
 )
 from app.models.ledger import LedgerEntry
 from app.models.user import User
-from app.services import audit_service
+from app.services import audit_service, catalog_service
 from app.services.business_time import barber_may_edit_entry, business_date_for_instant
-from app.services.financial_month_util import require_open_financial_month
+from app.services.financial_month_util import (
+    assert_month_allows_write,
+    require_financial_month_for_new_entry,
+    require_writable_month_for_entry,
+)
 
 
 def allocate_next_barber_index(db: Session, barber_user_id: uuid.UUID) -> int:
@@ -56,8 +60,10 @@ def create_manager_official_service_line(
     if amount <= 0:
         raise ValidationAppError("Amount must be positive.", code="INVALID_AMOUNT")
 
+    catalog_service.assert_service_type_selectable(db, service_type_id)
+
     business_date = business_date_for_instant(occurred_at)
-    fm = require_open_financial_month(db, business_date)
+    fm = require_financial_month_for_new_entry(db, business_date, manager)
     idx = allocate_next_barber_index(db, barber_user_id)
 
     row = LedgerEntry(
@@ -103,16 +109,20 @@ def create_barber_service_entry(
     occurred_at: datetime,
     service_type_id: uuid.UUID,
     amount: Decimal,
-    payment_method: Any,
     note: str | None,
 ) -> LedgerEntry:
-    if actor.role != UserRole.BARBER:
-        raise ForbiddenError("Only barbers can use this self-ledger endpoint.", code="NOT_BARBER")
+    if actor.role not in (UserRole.BARBER, UserRole.STAFF):
+        raise ForbiddenError(
+            "Only service providers can use this self-ledger endpoint.",
+            code="NOT_SERVICE_PROVIDER",
+        )
     if amount <= 0:
         raise ValidationAppError("Amount must be positive.", code="INVALID_AMOUNT")
 
+    catalog_service.assert_service_type_selectable(db, service_type_id)
+
     business_date = business_date_for_instant(occurred_at)
-    fm = require_open_financial_month(db, business_date)
+    fm = require_financial_month_for_new_entry(db, business_date, actor)
     idx = allocate_next_barber_index(db, actor.id)
 
     row = LedgerEntry(
@@ -128,7 +138,7 @@ def create_barber_service_entry(
         barber_sequence_index=idx,
         reconciliation_status=LedgerReconciliationStatus.PENDING,
         record_lifecycle=RecordLifecycleState.ACTIVE,
-        payment_method=payment_method,
+        payment_method=None,
         note=note,
         created_by_user_id=actor.id,
         is_manager_created_without_barber=False,
@@ -160,10 +170,12 @@ def update_barber_service_entry(
     amount: Decimal | None,
     service_type_id: uuid.UUID | None,
     note: str | None,
-    payment_method: Any | None,
 ) -> LedgerEntry:
-    if actor.role != UserRole.BARBER:
-        raise ForbiddenError("Only barbers may edit their own ledger.", code="NOT_BARBER")
+    if actor.role not in (UserRole.BARBER, UserRole.STAFF):
+        raise ForbiddenError(
+            "Only service providers may edit their own ledger.",
+            code="NOT_SERVICE_PROVIDER",
+        )
     row = db.get(LedgerEntry, entry_id)
     if row is None or row.record_lifecycle != RecordLifecycleState.ACTIVE:
         raise NotFoundError("Entry not found.", code="LEDGER_NOT_FOUND")
@@ -178,6 +190,13 @@ def update_barber_service_entry(
         LedgerReconciliationStatus.LOCKED,
     }:
         raise ConflictError("Approved or settled records cannot be edited.", code="LEDGER_LOCKED")
+
+    require_writable_month_for_entry(
+        db,
+        financial_month_id=row.financial_month_id,
+        actor=actor,
+        grace_operational=False,
+    )
 
     bd = row.business_date
     if bd is None:
@@ -207,11 +226,10 @@ def update_barber_service_entry(
             ip_address=ip_address,
         )
     if service_type_id is not None:
+        catalog_service.assert_service_type_selectable(db, service_type_id)
         row.service_type_id = service_type_id
     if note is not None:
         row.note = note
-    if payment_method is not None:
-        row.payment_method = payment_method
 
     db.add(row)
     db.flush()
@@ -236,10 +254,19 @@ def soft_delete_barber_entry(
         raise ConflictError(
             "Cannot delete approved or settled records.", code="LEDGER_DELETE_FORBIDDEN"
         )
-    if actor.role == UserRole.BARBER:
+
+    grace_ops = actor.role in {UserRole.MANAGER, UserRole.ADMIN}
+    require_writable_month_for_entry(
+        db,
+        financial_month_id=row.financial_month_id,
+        actor=actor,
+        grace_operational=grace_ops,
+    )
+
+    if actor.role in (UserRole.BARBER, UserRole.STAFF):
         if row.employee_user_id != actor.id:
             raise ForbiddenError(
-                "Cannot delete another barber's records.", code="LEDGER_WRONG_BARBER"
+                "Cannot delete another provider's records.", code="LEDGER_WRONG_EMPLOYEE"
             )
         bd = row.business_date
         if bd is None:
@@ -299,6 +326,37 @@ def purge_entry_admin(
         message=f"Purged: {reason}",
         ip_address=ip_address,
     )
+
+
+def reconciliation_comparison_status(row: LedgerEntry) -> str:
+    """UI label for side-by-side employee vs manager ledger comparison."""
+    st = str(row.reconciliation_status or "")
+    if row.is_manager_created_without_barber or st == LedgerReconciliationStatus.MISSING_BARBER_ENTRY:
+        return "missing_employee_entry"
+
+    employee_amt = row.original_barber_amount if row.original_barber_amount is not None else row.amount
+    manager_amt = row.manager_approved_amount
+
+    if manager_amt is None:
+        return "missing_manager_entry"
+
+    if st == LedgerReconciliationStatus.DISPUTED:
+        return "disputed"
+    if st in {LedgerReconciliationStatus.SETTLED, LedgerReconciliationStatus.LOCKED}:
+        return "settled"
+
+    if employee_amt != manager_amt:
+        return "mismatch"
+
+    if st in {
+        LedgerReconciliationStatus.ADJUSTED,
+        LedgerReconciliationStatus.MANAGER_OVERRIDE,
+        LedgerReconciliationStatus.APPROVED,
+        LedgerReconciliationStatus.AWAITING_BARBER_REVIEW,
+    }:
+        return "adjusted"
+
+    return "matched"
 
 
 def list_barber_day_entries(
@@ -393,6 +451,46 @@ def barber_month_gross_recorded(
         .scalar()
     )
     return Decimal(val or 0)
+
+
+def _barber_service_entries_filter(db: Session, *, barber_user_id: uuid.UUID):
+    return db.query(LedgerEntry).filter(
+        LedgerEntry.employee_user_id == barber_user_id,
+        LedgerEntry.entry_type == LedgerEntryType.SERVICE,
+        LedgerEntry.record_lifecycle == RecordLifecycleState.ACTIVE,
+    )
+
+
+def barber_month_services_count(
+    db: Session,
+    *,
+    barber_user_id: uuid.UUID,
+    year: int,
+    month: int,
+) -> int:
+    val = (
+        _barber_service_entries_filter(db, barber_user_id=barber_user_id)
+        .filter(
+            extract("year", LedgerEntry.business_date) == year,
+            extract("month", LedgerEntry.business_date) == month,
+        )
+        .count()
+    )
+    return int(val or 0)
+
+
+def barber_all_time_gross_recorded(db: Session, *, barber_user_id: uuid.UUID) -> Decimal:
+    val = (
+        _barber_service_entries_filter(db, barber_user_id=barber_user_id)
+        .with_entities(func.coalesce(func.sum(LedgerEntry.amount), 0))
+        .scalar()
+    )
+    return Decimal(val or 0)
+
+
+def barber_all_time_services_count(db: Session, *, barber_user_id: uuid.UUID) -> int:
+    val = _barber_service_entries_filter(db, barber_user_id=barber_user_id).count()
+    return int(val or 0)
 
 
 def compute_index_reconciliation_issues(

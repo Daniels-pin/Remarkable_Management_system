@@ -10,6 +10,8 @@ export type TransactionStatus =
   | "locked";
 
 export type PaymentMethod = "cash" | "card" | "transfer" | "pos";
+export type ExpensePaymentSource = "cash_shop" | "admin_transfer";
+export type LedgerPaymentMethod = PaymentMethod | ExpensePaymentSource;
 
 export type LedgerTransaction = {
   id: string;
@@ -19,7 +21,7 @@ export type LedgerTransaction = {
   employeeId: string | null;
   amount: number;
   previousAmount?: number;
-  paymentMethod: PaymentMethod | null;
+  paymentMethod: LedgerPaymentMethod | null;
   note: string | null;
   status: TransactionStatus;
   createdAt: string;
@@ -33,6 +35,15 @@ export type LedgerTransaction = {
   };
 };
 
+export type ExpenseSourceBreakdown = {
+  shopCash: number;
+  adminTransfer: number;
+  total: number;
+  operationalShopCash: number;
+  operationalAdminTransfer: number;
+  operationalTotal: number;
+};
+
 export type FinancialSnapshot = {
   totalRevenue: number;
   servicesRevenue: number;
@@ -41,6 +52,7 @@ export type FinancialSnapshot = {
   operationalExpenses: number;
   payrollCommission: number;
   netProfit: number;
+  expenseSources: ExpenseSourceBreakdown;
   paymentMethods: Record<PaymentMethod, number>;
 };
 
@@ -88,10 +100,15 @@ export type BarberProfile = {
   accountNumber: string;
   accountName: string;
   commissionPct: number;
-  salaryType: "commission" | "base_plus_commission";
+  salaryType: string;
   avatarUrl: string | null;
-  monthStats: { revenue: number; services: number; product: number; payout: number };
-  allTimeStats: { revenue: number; services: number; product: number; payout: number };
+  monthStats: { revenue: number; services: number; payout: number };
+  allTimeStats: { revenue: number; services: number; payout: number };
+};
+
+export type TeamMemberProfile = BarberProfile & {
+  role: "barber" | "staff";
+  fixedSalary: number | null;
 };
 
 export type PayoutRow = {

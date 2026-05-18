@@ -20,6 +20,14 @@ export const EMPTY_FINANCIAL_SNAPSHOT: FinancialSnapshot = {
   operationalExpenses: 0,
   payrollCommission: 0,
   netProfit: 0,
+  expenseSources: {
+    shopCash: 0,
+    adminTransfer: 0,
+    total: 0,
+    operationalShopCash: 0,
+    operationalAdminTransfer: 0,
+    operationalTotal: 0,
+  },
   paymentMethods: {
     cash: 0,
     card: 0,
@@ -41,6 +49,14 @@ export function scaleFinancials(
     operationalExpenses: round(base.operationalExpenses),
     payrollCommission: round(base.payrollCommission),
     netProfit: round(base.netProfit),
+    expenseSources: {
+      shopCash: round(base.expenseSources.shopCash),
+      adminTransfer: round(base.expenseSources.adminTransfer),
+      total: round(base.expenseSources.total),
+      operationalShopCash: round(base.expenseSources.operationalShopCash),
+      operationalAdminTransfer: round(base.expenseSources.operationalAdminTransfer),
+      operationalTotal: round(base.expenseSources.operationalTotal),
+    },
     paymentMethods: {
       cash: round(base.paymentMethods.cash),
       card: round(base.paymentMethods.card),
@@ -101,7 +117,7 @@ export function createEmptyBarberProfileForSession(session: SessionInfo): Barber
     commissionPct: 0,
     salaryType: "commission",
     avatarUrl: null,
-    monthStats: { revenue: 0, services: 0, product: 0, payout: 0 },
-    allTimeStats: { revenue: 0, services: 0, product: 0, payout: 0 },
+    monthStats: { revenue: 0, services: 0, payout: 0 },
+    allTimeStats: { revenue: 0, services: 0, payout: 0 },
   };
 }

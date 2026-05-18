@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import extract, func
@@ -9,146 +10,235 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.core.deps import ActorContext, get_actor_context, get_db
 from app.models.barber_daily_summary import BarberDailySummary
-from app.models.enums import AccountStatus, LedgerEntryType, RecordLifecycleState, UserRole
+from app.models.commission import MonthlyCommissionStatement
+from app.models.enums import (
+    AccountStatus,
+    LedgerEntryType,
+    RecordLifecycleState,
+    SalaryType,
+    UserRole,
+)
+from app.models.catalog import ServiceType
 from app.models.ledger import LedgerEntry
 from app.models.user import User
 from app.services.business_time import shop_tz
-from app.services.ledger_service import barber_month_gross_recorded, barber_month_revenue_buckets
+from app.services.ledger_service import (
+    barber_all_time_gross_recorded,
+    barber_all_time_services_count,
+    barber_month_gross_recorded,
+    barber_month_revenue_buckets,
+    barber_month_services_count,
+    list_barber_day_entries,
+    reconciliation_comparison_status,
+)
 
 router = APIRouter(prefix="/barbershop/directory", tags=["barbershop"])
 
+_TEAM_ROLES = (UserRole.BARBER, UserRole.STAFF)
 
-@router.get("/barbers")
-def list_barbers(
-    db: Session = Depends(get_db),
-    actor: ActorContext = Depends(get_actor_context),
-) -> dict:
-    """
-    Lightweight directory view for UI pickers and roster cards.
 
-    - Barbers may only see themselves (so the Barbers page can still route to their profile).
-    - Managers/admin/staff may see the full active roster.
-    """
-    if actor.user.role == UserRole.BARBER:
-        u = (
-            db.query(User)
-            .options(joinedload(User.profile))
-            .filter(User.id == actor.user.id)
-            .one()
+def _require_management(actor: ActorContext) -> None:
+    if actor.user.role not in (UserRole.ADMIN, UserRole.MANAGER):
+        raise HTTPException(
+            status_code=403,
+            detail={"message": "Forbidden", "code": "FORBIDDEN"},
         )
-        return {
-            "items": [
-                {
-                    "id": str(u.id),
-                    "username": u.username,
-                    "email": u.email,
-                    "full_name": u.profile.full_name if u.profile else None,
-                    "commission_pct": str(u.commission_pct) if u.commission_pct is not None else None,
-                    "salary_type": str(u.salary_type) if u.salary_type else None,
-                }
-            ]
-        }
 
-    rows = (
-        db.query(User)
-        .options(joinedload(User.profile))
-        .filter(
-            User.role == UserRole.BARBER,
-            User.account_status == AccountStatus.ACTIVE,
-        )
-        .order_by(User.username.asc())
-        .all()
-    )
-    return {
-        "items": [
-            {
-                "id": str(u.id),
-                "username": u.username,
-                "email": u.email,
-                "full_name": u.profile.full_name if u.profile else None,
-                "commission_pct": str(u.commission_pct) if u.commission_pct is not None else None,
-                "salary_type": str(u.salary_type) if u.salary_type else None,
-            }
-            for u in rows
-        ]
+
+def _serialize_team_member(u: User, *, include_payroll: bool = True) -> dict:
+    base = {
+        "id": str(u.id),
+        "username": u.username,
+        "email": u.email,
+        "role": str(u.role),
+        "full_name": u.profile.full_name if u.profile else None,
     }
-
-
-def _require_can_view_barber(actor: ActorContext, barber_id: uuid.UUID) -> None:
-    if actor.user.role == UserRole.BARBER and actor.user.id != barber_id:
-        # barbers may only see their own directory details
-        raise HTTPException(status_code=403, detail={"message": "Forbidden", "code": "FORBIDDEN"})
-
-
-@router.get("/barbers/{barber_user_id}")
-def get_barber(
-    barber_user_id: uuid.UUID,
-    db: Session = Depends(get_db),
-    actor: ActorContext = Depends(get_actor_context),
-) -> dict:
-    _require_can_view_barber(actor, barber_user_id)
-    u = (
-        db.query(User)
-        .options(joinedload(User.profile))
-        .filter(User.id == barber_user_id, User.role == UserRole.BARBER)
-        .one_or_none()
-    )
-    if u is None:
-        return {"found": False}
-    return {
-        "found": True,
-        "barber": {
-            "id": str(u.id),
-            "username": u.username,
-            "email": u.email,
-            "full_name": u.profile.full_name if u.profile else None,
-            "phone": u.profile.phone if u.profile else None,
-            "bank_name": u.profile.bank_name if u.profile else None,
-            "account_number": u.profile.account_number if u.profile else None,
-            "account_name": u.profile.account_name if u.profile else None,
+    if not include_payroll:
+        return base
+    base.update(
+        {
             "commission_pct": str(u.commission_pct) if u.commission_pct is not None else None,
+            "fixed_salary": str(u.fixed_salary) if u.fixed_salary is not None else None,
             "salary_type": str(u.salary_type) if u.salary_type else None,
-        },
-    }
+        }
+    )
+    return base
 
 
-@router.get("/barbers/{barber_user_id}/month-stats")
-def barber_month_stats(
-    barber_user_id: uuid.UUID,
-    db: Session = Depends(get_db),
-    actor: ActorContext = Depends(get_actor_context),
-    year: int | None = None,
-    month: int | None = None,
+def _posture_label(buckets: dict[str, Decimal]) -> str:
+    if buckets["disputed_total"] > 0:
+        return "disputed"
+    if buckets["awaiting_review_total"] > 0:
+        return "awaiting_review"
+    if buckets["pending_total"] > 0:
+        return "pending"
+    if buckets["adjusted_or_approved_total"] > 0:
+        return "in_review"
+    if buckets["settled_total"] > 0:
+        return "settled"
+    return "clear"
+
+
+def _expected_month_payout(u: User, *, settled: Decimal, commission_pct: Decimal) -> Decimal:
+    commission_amount = (settled * commission_pct / 100) if commission_pct else Decimal(0)
+    if u.salary_type == SalaryType.FIXED and u.fixed_salary is not None:
+        return Decimal(u.fixed_salary)
+    if u.salary_type == SalaryType.FIXED_OR_COMMISSION and u.fixed_salary is not None:
+        return max(Decimal(u.fixed_salary), commission_amount)
+    return commission_amount
+
+
+def _month_stats_payload(
+    db: Session, u: User, *, year: int, month: int, include_payroll: bool = True
 ) -> dict:
-    _require_can_view_barber(actor, barber_user_id)
-    now = datetime.now(shop_tz())
-    y, m = (year or now.year), (month or now.month)
-    u = db.get(User, barber_user_id)
-    if u is None:
-        return {"found": False}
-    buckets = barber_month_revenue_buckets(db, barber_user_id=barber_user_id, year=y, month=m)
-    gross = barber_month_gross_recorded(db, barber_user_id=barber_user_id, year=y, month=m)
-    pct = u.commission_pct or 0
+    buckets = barber_month_revenue_buckets(db, barber_user_id=u.id, year=year, month=month)
+    gross = barber_month_gross_recorded(db, barber_user_id=u.id, year=year, month=month)
+    services_count = barber_month_services_count(db, barber_user_id=u.id, year=year, month=month)
+    all_time_gross = barber_all_time_gross_recorded(db, barber_user_id=u.id)
+    all_time_services = barber_all_time_services_count(db, barber_user_id=u.id)
+    all_time_payout = (
+        db.query(func.coalesce(func.sum(MonthlyCommissionStatement.commission_amount), 0))
+        .filter(MonthlyCommissionStatement.user_id == u.id)
+        .scalar()
+    )
+    pct = u.commission_pct or Decimal(0)
     settled = buckets["settled_total"]
-    expected_payout = (settled * pct / 100) if pct else 0
-    return {
+    payload = {
         "found": True,
-        "year": y,
-        "month": m,
-        "commission_pct": str(pct),
+        "year": year,
+        "month": month,
+        "role": str(u.role),
         "current_month_gross_recorded": str(gross),
+        "current_month_services_count": services_count,
         "pending_total": str(buckets["pending_total"]),
         "awaiting_review_total": str(buckets["awaiting_review_total"]),
         "adjusted_or_approved_total": str(buckets["adjusted_or_approved_total"]),
         "settled_total": str(buckets["settled_total"]),
         "disputed_total": str(buckets["disputed_total"]),
-        "expected_payout_on_settled": str(expected_payout),
+        "reconciliation_posture": _posture_label(buckets),
     }
+    if include_payroll:
+        expected_payout = _expected_month_payout(u, settled=settled, commission_pct=pct)
+        payload.update(
+            {
+                "commission_pct": str(pct),
+                "fixed_salary": str(u.fixed_salary) if u.fixed_salary is not None else None,
+                "salary_type": str(u.salary_type) if u.salary_type else None,
+                "all_time_gross_recorded": str(all_time_gross),
+                "all_time_services_count": all_time_services,
+                "all_time_commission_total": str(all_time_payout or 0),
+                "expected_payout_on_settled": str(expected_payout),
+            }
+        )
+    return payload
 
 
-@router.get("/barbers/{barber_user_id}/ledger")
-def barber_ledger(
-    barber_user_id: uuid.UUID,
+def _get_team_member(db: Session, user_id: uuid.UUID) -> User | None:
+    return (
+        db.query(User)
+        .options(joinedload(User.profile))
+        .filter(
+            User.id == user_id,
+            User.role.in_(_TEAM_ROLES),
+            User.account_status == AccountStatus.ACTIVE,
+        )
+        .one_or_none()
+    )
+
+
+@router.get("/team")
+def list_team(
+    db: Session = Depends(get_db),
+    actor: ActorContext = Depends(get_actor_context),
+    role: str | None = Query(None, description="Filter: barber, staff, or omit for all"),
+) -> dict:
+    """Active barbers and staff with current-month performance snapshots."""
+    _require_management(actor)
+    now = datetime.now(shop_tz())
+    y, m = now.year, now.month
+
+    q = (
+        db.query(User)
+        .options(joinedload(User.profile))
+        .filter(
+            User.role.in_(_TEAM_ROLES),
+            User.account_status == AccountStatus.ACTIVE,
+        )
+        .order_by(User.role.asc(), User.username.asc())
+    )
+    if role == "barber":
+        q = q.filter(User.role == UserRole.BARBER)
+    elif role == "staff":
+        q = q.filter(User.role == UserRole.STAFF)
+
+    items = []
+    for u in q.all():
+        buckets = barber_month_revenue_buckets(db, barber_user_id=u.id, year=y, month=m)
+        gross = barber_month_gross_recorded(db, barber_user_id=u.id, year=y, month=m)
+        services = barber_month_services_count(db, barber_user_id=u.id, year=y, month=m)
+        pct = u.commission_pct or Decimal(0)
+        expected = _expected_month_payout(u, settled=buckets["settled_total"], commission_pct=pct)
+        include_payroll = actor.user.role == UserRole.ADMIN
+        base = _serialize_team_member(u, include_payroll=include_payroll)
+        base.update(
+            {
+                "current_month_revenue": str(gross),
+                "current_month_services_count": services,
+                "reconciliation_posture": _posture_label(buckets),
+            }
+        )
+        if include_payroll:
+            base["expected_payout"] = str(expected)
+        items.append(base)
+
+    return {"items": items, "year": y, "month": m}
+
+
+@router.get("/team/{member_user_id}")
+def get_team_member(
+    member_user_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    actor: ActorContext = Depends(get_actor_context),
+) -> dict:
+    _require_management(actor)
+    u = _get_team_member(db, member_user_id)
+    if u is None:
+        return {"found": False}
+    include_payroll = actor.user.role == UserRole.ADMIN
+    detail = _serialize_team_member(u, include_payroll=include_payroll)
+    detail["phone"] = u.profile.phone if u.profile else None
+    if include_payroll:
+        detail.update(
+            {
+                "bank_name": u.profile.bank_name if u.profile else None,
+                "account_number": u.profile.account_number if u.profile else None,
+                "account_name": u.profile.account_name if u.profile else None,
+            }
+        )
+    return {"found": True, "member": detail}
+
+
+@router.get("/team/{member_user_id}/month-stats")
+def team_member_month_stats(
+    member_user_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    actor: ActorContext = Depends(get_actor_context),
+    year: int | None = None,
+    month: int | None = None,
+) -> dict:
+    _require_management(actor)
+    now = datetime.now(shop_tz())
+    y, m = (year or now.year), (month or now.month)
+    u = _get_team_member(db, member_user_id)
+    if u is None:
+        return {"found": False}
+    include_payroll = actor.user.role == UserRole.ADMIN
+    return _month_stats_payload(db, u, year=y, month=m, include_payroll=include_payroll)
+
+
+@router.get("/team/{member_user_id}/ledger")
+def team_member_ledger(
+    member_user_id: uuid.UUID,
     db: Session = Depends(get_db),
     actor: ActorContext = Depends(get_actor_context),
     year: int | None = None,
@@ -156,11 +246,128 @@ def barber_ledger(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=50),
 ) -> dict:
-    _require_can_view_barber(actor, barber_user_id)
+    _require_management(actor)
+    if _get_team_member(db, member_user_id) is None:
+        raise HTTPException(status_code=404, detail={"message": "Not found", "code": "NOT_FOUND"})
+    return _ledger_page(db, member_user_id, year=year, month=month, page=page, page_size=page_size)
+
+
+@router.get("/team/{member_user_id}/reconciliations")
+def team_member_reconciliation_history(
+    member_user_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    actor: ActorContext = Depends(get_actor_context),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=50),
+) -> dict:
+    _require_management(actor)
+    if _get_team_member(db, member_user_id) is None:
+        raise HTTPException(status_code=404, detail={"message": "Not found", "code": "NOT_FOUND"})
+    return _reconciliations_page(db, member_user_id, page=page, page_size=page_size)
+
+
+def _service_type_names(db: Session, rows: list[LedgerEntry]) -> dict[uuid.UUID, str]:
+    ids = {r.service_type_id for r in rows if r.service_type_id}
+    if not ids:
+        return {}
+    return {
+        row.id: row.name
+        for row in db.query(ServiceType).filter(ServiceType.id.in_(ids)).all()
+    }
+
+
+def _comparison_row_payload(row: LedgerEntry, *, service_name: str | None) -> dict:
+    label = service_name or "Service"
+    employee_amt = (
+        None
+        if row.is_manager_created_without_barber
+        else row.original_barber_amount if row.original_barber_amount is not None else row.amount
+    )
+    manager_amt = row.manager_approved_amount
+    return {
+        "id": str(row.id),
+        "index": row.barber_sequence_index,
+        "index_label": f"#{row.barber_sequence_index:03d}" if row.barber_sequence_index else None,
+        "service_name": label,
+        "employee_amount": str(employee_amt) if employee_amt is not None else None,
+        "manager_amount": str(manager_amt) if manager_amt is not None else None,
+        "employee_label": (
+            f"{label} — ₦{employee_amt}"
+            if employee_amt is not None
+            else None
+        ),
+        "manager_label": (
+            f"{label} — ₦{manager_amt}" if manager_amt is not None else None
+        ),
+        "comparison_status": reconciliation_comparison_status(row),
+        "reconciliation_status": str(row.reconciliation_status)
+        if row.reconciliation_status
+        else None,
+        "business_date": row.business_date.isoformat() if row.business_date else None,
+        "occurred_at": row.occurred_at.isoformat(),
+    }
+
+
+@router.get("/team/{member_user_id}/reconciliation-workspace")
+def team_member_reconciliation_workspace(
+    member_user_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    actor: ActorContext = Depends(get_actor_context),
+    business_date: date | None = Query(None, alias="date"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=20),
+) -> dict:
+    """Indexed side-by-side employee vs manager service lines for a single business day."""
+    _require_management(actor)
+    if _get_team_member(db, member_user_id) is None:
+        raise HTTPException(status_code=404, detail={"message": "Not found", "code": "NOT_FOUND"})
+
+    day = business_date or datetime.now(shop_tz()).date()
+    rows, total = list_barber_day_entries(
+        db,
+        barber_user_id=member_user_id,
+        business_day=day,
+        page=page,
+        page_size=page_size,
+    )
+    names = _service_type_names(db, rows)
+    summary = (
+        db.query(BarberDailySummary)
+        .filter(
+            BarberDailySummary.barber_user_id == member_user_id,
+            BarberDailySummary.business_date == day,
+        )
+        .one_or_none()
+    )
+    return {
+        "business_date": day.isoformat(),
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "daily_summary_status": str(summary.status) if summary else None,
+        "items": [
+            _comparison_row_payload(
+                r,
+                service_name=names.get(r.service_type_id) if r.service_type_id else None,
+            )
+            for r in rows
+        ],
+    }
+
+
+def _ledger_page(
+    db: Session,
+    employee_user_id: uuid.UUID,
+    *,
+    year: int | None,
+    month: int | None,
+    page: int,
+    page_size: int,
+) -> dict:
     q = (
         db.query(LedgerEntry)
         .filter(
-            LedgerEntry.employee_user_id == barber_user_id,
+            LedgerEntry.employee_user_id == employee_user_id,
             LedgerEntry.entry_type == LedgerEntryType.SERVICE,
             LedgerEntry.record_lifecycle == RecordLifecycleState.ACTIVE,
         )
@@ -201,18 +408,16 @@ def barber_ledger(
     }
 
 
-@router.get("/barbers/{barber_user_id}/reconciliations")
-def barber_reconciliation_history(
-    barber_user_id: uuid.UUID,
-    db: Session = Depends(get_db),
-    actor: ActorContext = Depends(get_actor_context),
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=50),
+def _reconciliations_page(
+    db: Session,
+    employee_user_id: uuid.UUID,
+    *,
+    page: int,
+    page_size: int,
 ) -> dict:
-    _require_can_view_barber(actor, barber_user_id)
     q = (
         db.query(BarberDailySummary)
-        .filter(BarberDailySummary.barber_user_id == barber_user_id)
+        .filter(BarberDailySummary.barber_user_id == employee_user_id)
         .order_by(BarberDailySummary.business_date.desc())
     )
     total = q.count()
@@ -241,3 +446,113 @@ def barber_reconciliation_history(
         ],
     }
 
+
+# Legacy barber-only endpoints (kept for existing clients)
+
+
+@router.get("/barbers")
+def list_barbers(
+    db: Session = Depends(get_db),
+    actor: ActorContext = Depends(get_actor_context),
+) -> dict:
+    _require_management(actor)
+    rows = (
+        db.query(User)
+        .options(joinedload(User.profile))
+        .filter(
+            User.role == UserRole.BARBER,
+            User.account_status == AccountStatus.ACTIVE,
+        )
+        .order_by(User.username.asc())
+        .all()
+    )
+    return {
+        "items": [
+            {
+                "id": str(u.id),
+                "username": u.username,
+                "email": u.email,
+                "full_name": u.profile.full_name if u.profile else None,
+                "commission_pct": str(u.commission_pct) if u.commission_pct is not None else None,
+                "salary_type": str(u.salary_type) if u.salary_type else None,
+            }
+            for u in rows
+        ]
+    }
+
+
+@router.get("/barbers/{barber_user_id}")
+def get_barber(
+    barber_user_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    actor: ActorContext = Depends(get_actor_context),
+) -> dict:
+    _require_management(actor)
+    u = (
+        db.query(User)
+        .options(joinedload(User.profile))
+        .filter(User.id == barber_user_id, User.role == UserRole.BARBER)
+        .one_or_none()
+    )
+    if u is None:
+        return {"found": False}
+    return {
+        "found": True,
+        "barber": {
+            "id": str(u.id),
+            "username": u.username,
+            "email": u.email,
+            "full_name": u.profile.full_name if u.profile else None,
+            "phone": u.profile.phone if u.profile else None,
+            "bank_name": u.profile.bank_name if u.profile else None,
+            "account_number": u.profile.account_number if u.profile else None,
+            "account_name": u.profile.account_name if u.profile else None,
+            "commission_pct": str(u.commission_pct) if u.commission_pct is not None else None,
+            "salary_type": str(u.salary_type) if u.salary_type else None,
+        },
+    }
+
+
+@router.get("/barbers/{barber_user_id}/month-stats")
+def barber_month_stats(
+    barber_user_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    actor: ActorContext = Depends(get_actor_context),
+    year: int | None = None,
+    month: int | None = None,
+) -> dict:
+    _require_management(actor)
+    now = datetime.now(shop_tz())
+    y, m = (year or now.year), (month or now.month)
+    u = db.get(User, barber_user_id)
+    if u is None or u.role != UserRole.BARBER:
+        return {"found": False}
+    return _month_stats_payload(db, u, year=y, month=m)
+
+
+@router.get("/barbers/{barber_user_id}/ledger")
+def barber_ledger(
+    barber_user_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    actor: ActorContext = Depends(get_actor_context),
+    year: int | None = None,
+    month: int | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=50),
+) -> dict:
+    _require_management(actor)
+    return _ledger_page(
+        db, barber_user_id, year=year, month=month, page=page, page_size=page_size
+    )
+
+
+@router.get("/barbers/{barber_user_id}/reconciliations")
+def barber_reconciliation_history(
+    barber_user_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    actor: ActorContext = Depends(get_actor_context),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=50),
+) -> dict:
+    _require_management(actor)
+    return _reconciliations_page(db, barber_user_id, page=page, page_size=page_size)

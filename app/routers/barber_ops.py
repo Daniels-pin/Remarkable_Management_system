@@ -5,9 +5,11 @@ from decimal import Decimal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Request
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.core.deps import ActorContext, get_barber_actor, get_db
+from app.core.deps import ActorContext, get_service_provider_actor, get_db
+from app.models.commission import MonthlyCommissionStatement
 from app.models.reconciliation_timeline import ReconciliationTimelineEvent
 from app.models.user import User
 from app.schemas.operations import (
@@ -43,7 +45,7 @@ def _ledger_row(e) -> dict:
 @router.get("/dashboard")
 def barber_dashboard(
     db: Session = Depends(get_db),
-    actor: ActorContext = Depends(get_barber_actor),
+    actor: ActorContext = Depends(get_service_provider_actor),
     year: int | None = None,
     month: int | None = None,
 ) -> dict:
@@ -54,6 +56,16 @@ def barber_dashboard(
         db, barber_user_id=user.id, year=y, month=m
     )
     gross = ledger_service.barber_month_gross_recorded(db, barber_user_id=user.id, year=y, month=m)
+    services_count = ledger_service.barber_month_services_count(
+        db, barber_user_id=user.id, year=y, month=m
+    )
+    all_time_gross = ledger_service.barber_all_time_gross_recorded(db, barber_user_id=user.id)
+    all_time_services = ledger_service.barber_all_time_services_count(db, barber_user_id=user.id)
+    all_time_payout = (
+        db.query(func.coalesce(func.sum(MonthlyCommissionStatement.commission_amount), 0))
+        .filter(MonthlyCommissionStatement.user_id == user.id)
+        .scalar()
+    )
     pct = user.commission_pct or Decimal("0")
     settled = buckets["settled_total"]
     expected_payout = (settled * pct / Decimal("100")).quantize(Decimal("0.01"))
@@ -62,6 +74,10 @@ def barber_dashboard(
         "month": m,
         "commission_pct": str(pct),
         "current_month_gross_recorded": str(gross),
+        "current_month_services_count": services_count,
+        "all_time_gross_recorded": str(all_time_gross),
+        "all_time_services_count": all_time_services,
+        "all_time_commission_total": str(all_time_payout or 0),
         "pending_total": str(buckets["pending_total"]),
         "awaiting_review_total": str(buckets["awaiting_review_total"]),
         "adjusted_or_approved_total": str(buckets["adjusted_or_approved_total"]),
@@ -76,7 +92,7 @@ def barber_dashboard(
 @router.get("/ledger/day")
 def barber_day_ledger(
     db: Session = Depends(get_db),
-    actor: ActorContext = Depends(get_barber_actor),
+    actor: ActorContext = Depends(get_service_provider_actor),
     business_date: date = Query(..., description="Business day in YYYY-MM-DD"),
     page: int = Query(1, ge=1),
     page_size: int = Query(10, ge=1, le=50),
@@ -102,7 +118,7 @@ def barber_create_service(
     body: BarberServiceCreateBody,
     request: Request,
     db: Session = Depends(get_db),
-    actor: ActorContext = Depends(get_barber_actor),
+    actor: ActorContext = Depends(get_service_provider_actor),
 ) -> dict:
     row = ledger_service.create_barber_service_entry(
         db,
@@ -112,7 +128,6 @@ def barber_create_service(
         occurred_at=body.occurred_at,
         service_type_id=body.service_type_id,
         amount=body.amount,
-        payment_method=body.payment_method,
         note=body.note,
     )
     db.commit()
@@ -126,7 +141,7 @@ def barber_update_service(
     body: BarberServiceUpdateBody,
     request: Request,
     db: Session = Depends(get_db),
-    actor: ActorContext = Depends(get_barber_actor),
+    actor: ActorContext = Depends(get_service_provider_actor),
 ) -> dict:
     row = ledger_service.update_barber_service_entry(
         db,
@@ -137,7 +152,6 @@ def barber_update_service(
         amount=body.amount,
         service_type_id=body.service_type_id,
         note=body.note,
-        payment_method=body.payment_method,
     )
     db.commit()
     db.refresh(row)
@@ -149,7 +163,7 @@ def barber_delete_service(
     entry_id: UUID,
     request: Request,
     db: Session = Depends(get_db),
-    actor: ActorContext = Depends(get_barber_actor),
+    actor: ActorContext = Depends(get_service_provider_actor),
 ) -> dict:
     ledger_service.soft_delete_barber_entry(
         db,
@@ -166,7 +180,7 @@ def barber_delete_service(
 def barber_reconciliation_day(
     business_day: date,
     db: Session = Depends(get_db),
-    actor: ActorContext = Depends(get_barber_actor),
+    actor: ActorContext = Depends(get_service_provider_actor),
 ) -> dict:
     summary = reconciliation_service.get_or_create_daily_summary(
         db, barber_user_id=actor.user.id, business_day=business_day
@@ -216,7 +230,7 @@ def barber_accept(
     business_day: date,
     request: Request,
     db: Session = Depends(get_db),
-    actor: ActorContext = Depends(get_barber_actor),
+    actor: ActorContext = Depends(get_service_provider_actor),
 ) -> dict:
     s = reconciliation_service.barber_accept_summary(
         db,
@@ -235,7 +249,7 @@ def barber_reject(
     body: BarberRejectBody,
     request: Request,
     db: Session = Depends(get_db),
-    actor: ActorContext = Depends(get_barber_actor),
+    actor: ActorContext = Depends(get_service_provider_actor),
 ) -> dict:
     s = reconciliation_service.barber_reject_summary(
         db,

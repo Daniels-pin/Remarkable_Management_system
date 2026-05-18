@@ -7,7 +7,8 @@ from sqlalchemy.orm import Session
 
 from app.core.exceptions import ForbiddenError, NotFoundError
 from app.models.commission import MonthlyCommissionStatement
-from app.models.enums import CommissionPayoutState, UserRole
+from app.models.enums import CommissionPayoutState, FinancialMonthState, UserRole
+from app.models.financial_month import FinancialMonth
 from app.models.user import User
 from app.services import audit_service
 
@@ -28,6 +29,14 @@ def mark_statement_paid(
     row = db.get(MonthlyCommissionStatement, statement_id)
     if row is None:
         raise NotFoundError("Statement not found.", code="COMMISSION_NOT_FOUND")
+    fm = db.get(FinancialMonth, row.financial_month_id)
+    if fm is not None and fm.state == FinancialMonthState.LOCKED:
+        from app.core.exceptions import ValidationAppError
+
+        raise ValidationAppError(
+            "Payouts cannot be modified while the month is locked.",
+            code="FINANCIAL_MONTH_LOCKED",
+        )
     row.payout_state = CommissionPayoutState.PAID
     row.payout_marked_at = datetime.now(UTC)
     row.payout_marked_by_user_id = admin.id

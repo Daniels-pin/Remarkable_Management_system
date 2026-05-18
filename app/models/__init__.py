@@ -5,6 +5,7 @@ from app.models.barber_sequence_counter import BarberSequenceCounter
 from app.models.catalog import ExpenseCategory, SaleCategory, ServiceType
 from app.models.commission import MonthlyCommissionStatement
 from app.models.financial_month import FinancialMonth, MonthReopenEvent
+from app.models.financial_month_snapshot import FinancialMonthSnapshot
 from app.models.ledger import LedgerEntry
 from app.models.reconciliation_timeline import ReconciliationTimelineEvent
 from app.models.user import User, UserProfile, UserSession
@@ -16,6 +17,7 @@ __all__ = [
     "BarberSequenceCounter",
     "ExpenseCategory",
     "FinancialMonth",
+    "FinancialMonthSnapshot",
     "LedgerEntry",
     "MonthlyCommissionStatement",
     "MonthReopenEvent",

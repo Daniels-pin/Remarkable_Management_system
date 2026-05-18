@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import * as React from "react";
 
 import { useAuth } from "@/components/providers/auth-provider";
+import { getPostAuthPath } from "@/lib/routing";
 
 export default function HomePage() {
   const { session, loading } = useAuth();
@@ -19,7 +20,7 @@ export default function HomePage() {
       router.replace("/set-password");
       return;
     }
-    router.replace("/modules");
+    router.replace(getPostAuthPath(session.role));
   }, [session, loading, router]);
 
   return (

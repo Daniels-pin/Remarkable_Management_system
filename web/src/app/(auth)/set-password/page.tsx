@@ -12,6 +12,7 @@ import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/componen
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/components/providers/auth-provider";
+import { getPostAuthPath } from "@/lib/routing";
 import { ApiError, changePassword } from "@/lib/api";
 
 export default function SetPasswordPage() {
@@ -33,8 +34,8 @@ export default function SetPasswordPage() {
     try {
       await changePassword(current, next);
       toast.success("Password updated");
-      await refresh();
-      router.replace("/modules");
+      const updated = await refresh();
+      router.replace(getPostAuthPath(updated?.role ?? "staff"));
       router.refresh();
     } catch (err) {
       if (err instanceof ApiError) {

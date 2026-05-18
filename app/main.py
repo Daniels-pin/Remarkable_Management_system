@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, FastAPI, Request
+from sqlalchemy.orm import Session
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -17,6 +18,7 @@ from app.routers import (
     admin,
     auth,
     barber_ops,
+    barbershop_analytics,
     barbershop_catalog,
     barbershop_directory,
     barbershop_ledger,
@@ -32,6 +34,18 @@ from app.routers import (
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    from app.database.session import SessionLocal
+    from app.services import month_lifecycle_service
+
+    db: Session = SessionLocal()
+    try:
+        month_lifecycle_service.process_lifecycle_transitions(db)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
     yield
 
 
@@ -78,5 +92,6 @@ api_v1.include_router(notifications.router)
 api_v1.include_router(barbershop_catalog.router)
 api_v1.include_router(barbershop_directory.router)
 api_v1.include_router(barbershop_ledger.router)
+api_v1.include_router(barbershop_analytics.router)
 api_v1.include_router(furniture.router)
 app.include_router(api_v1)

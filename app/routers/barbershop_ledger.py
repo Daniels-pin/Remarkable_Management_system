@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.auth.rbac import require_manager_or_admin
 from app.core.deps import ActorContext, get_actor_context, get_db
 from app.models.catalog import ExpenseCategory, SaleCategory, ServiceType
-from app.models.enums import LedgerEntryType, RecordLifecycleState
+from app.models.enums import LedgerEntryType, RecordLifecycleState, UserRole
 from app.models.ledger import LedgerEntry
 from app.models.user import User
 from app.schemas.ledger import (
@@ -17,9 +17,9 @@ from app.schemas.ledger import (
     LedgerEntryCreateSale,
     LedgerEntryCreateService,
 )
-from app.services import ledger_service
+from app.services import catalog_service, ledger_service
 from app.services.business_time import business_date_for_instant
-from app.services.financial_month_util import require_open_financial_month
+from app.services.financial_month_util import require_financial_month_for_new_entry
 
 router = APIRouter(prefix="/barbershop/ledger", tags=["barbershop"])
 
@@ -61,15 +61,15 @@ def _enrich_row(db: Session, r: LedgerEntry) -> dict:
 @router.get("")
 def list_ledger(
     db: Session = Depends(get_db),
-    _: ActorContext = Depends(get_actor_context),
+    actor: ActorContext = Depends(get_actor_context),
 ) -> dict:
-    rows = (
-        db.query(LedgerEntry)
-        .filter(LedgerEntry.record_lifecycle == RecordLifecycleState.ACTIVE)
-        .order_by(LedgerEntry.occurred_at.desc())
-        .limit(200)
-        .all()
-    )
+    q = db.query(LedgerEntry).filter(LedgerEntry.record_lifecycle == RecordLifecycleState.ACTIVE)
+    if actor.user.role in (UserRole.BARBER, UserRole.STAFF):
+        q = q.filter(
+            LedgerEntry.entry_type == LedgerEntryType.SERVICE,
+            LedgerEntry.employee_user_id == actor.user.id,
+        )
+    rows = q.order_by(LedgerEntry.occurred_at.desc()).limit(200).all()
     return {"items": [_enrich_row(db, r) for r in rows]}
 
 
@@ -114,8 +114,9 @@ def create_ledger_entry(
 
     if entry_type == "sale":
         parsed = LedgerEntryCreateSale.model_validate(body)
+        catalog_service.assert_sale_category_selectable(db, parsed.sale_category_id)
         business_date = business_date_for_instant(parsed.occurred_at)
-        fm = require_open_financial_month(db, business_date)
+        fm = require_financial_month_for_new_entry(db, business_date, actor.user)
         row = LedgerEntry(
             financial_month_id=fm.id,
             entry_type=LedgerEntryType.SALE,
@@ -134,8 +135,9 @@ def create_ledger_entry(
         return _enrich_row(db, row)
 
     parsed = LedgerEntryCreateExpense.model_validate(body)
+    catalog_service.assert_expense_category_selectable(db, parsed.expense_category_id)
     business_date = business_date_for_instant(parsed.occurred_at)
-    fm = require_open_financial_month(db, business_date)
+    fm = require_financial_month_for_new_entry(db, business_date, actor.user)
     row = LedgerEntry(
         financial_month_id=fm.id,
         entry_type=LedgerEntryType.EXPENSE,

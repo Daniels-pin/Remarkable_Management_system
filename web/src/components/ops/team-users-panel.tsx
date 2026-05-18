@@ -413,7 +413,11 @@ export const TeamUsersPanel = React.forwardRef<TeamUsersPanelHandle, object>(
     try {
       const res = await listFinancialMonths();
       const eligible = res.items.filter(
-        (m) => m.state === "paid_locked" || m.state === "closed",
+        (m) =>
+          m.state === "locked" ||
+          m.state === "paid_locked" ||
+          m.state === "grace_period" ||
+          m.state === "closed",
       );
       setReopenMonths(
         eligible.map((m) => ({
@@ -1022,7 +1026,7 @@ export const TeamUsersPanel = React.forwardRef<TeamUsersPanelHandle, object>(
           <DialogHeader>
             <DialogTitle>Reopen locked month</DialogTitle>
             <DialogDescription>
-              Paid-locked months return to closed; closed months return to open. This
+              Locked months return to grace period; grace months return to open. This
               is recorded on the financial timeline.
             </DialogDescription>
           </DialogHeader>

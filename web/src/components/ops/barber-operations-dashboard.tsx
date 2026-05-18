@@ -1,20 +1,27 @@
 "use client";
 
 import * as React from "react";
+import Link from "next/link";
 
 import { BarberProfileView } from "@/components/ops/barber-profile-view";
+import { RecordServiceFab } from "@/components/ops/record-service-fab";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { useAuth } from "@/components/providers/auth-provider";
-import { formatNaira, formatTimeLabel } from "@/lib/format";
+import { canAccessBarbershopFinance } from "@/lib/barbershop-access";
 import {
-  createEmptyBarberProfileForSession,
-  INITIAL_PAYOUT_HISTORY,
-  INITIAL_TRANSACTIONS,
-} from "@/lib/ops-initial-state";
-import type { LedgerTransaction } from "@/lib/ops-types";
+  ApiError,
+  getBarberDashboard,
+  listBarberDayLedger,
+  listServiceTypes,
+  type BarberLedgerServiceRow,
+} from "@/lib/api";
+import { formatNaira, formatTimeLabel } from "@/lib/format";
+import { createEmptyBarberProfileForSession, INITIAL_PAYOUT_HISTORY } from "@/lib/ops-initial-state";
+import type { BarberProfile, LedgerTransaction, TransactionStatus } from "@/lib/ops-types";
 import { StatusBadge } from "@/components/ops/status-badge";
+import { toast } from "sonner";
 
 function LedgerRow({ t }: { t: LedgerTransaction }) {
   return (
@@ -25,12 +32,9 @@ function LedgerRow({ t }: { t: LedgerTransaction }) {
             #{t.index}
           </span>
           <StatusBadge status={t.status} />
-          <span className="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">
-            {t.type}
-          </span>
         </div>
         <p className="truncate text-sm font-medium text-[var(--foreground)]">
-          {t.employeeName ?? "House"} · {t.serviceType ?? t.saleCategory ?? t.expenseCategory ?? "Entry"}
+          {t.serviceType ?? "Service"}
         </p>
         {t.previousAmount != null ? (
           <p className="text-xs text-[var(--muted-foreground)]">
@@ -54,33 +58,146 @@ function LedgerRow({ t }: { t: LedgerTransaction }) {
   );
 }
 
+function mapServiceRow(r: BarberLedgerServiceRow, serviceNames: Map<string, string>): LedgerTransaction {
+  const amount = Number(r.amount);
+  const status = statusFromReconciliation(r.reconciliation_status);
+  return {
+    id: r.id,
+    index: r.barber_sequence_index ?? 0,
+    type: "service",
+    employeeName: null,
+    employeeId: null,
+    amount: Number.isFinite(amount) ? amount : 0,
+    paymentMethod:
+      r.payment_method === "cash" || r.payment_method === "transfer" || r.payment_method === "pos"
+        ? r.payment_method
+        : null,
+    note: r.note,
+    status,
+    createdAt: r.occurred_at,
+    serviceType: r.service_type_id ? serviceNames.get(r.service_type_id) : undefined,
+  };
+}
+
+function statusFromReconciliation(raw: string | null): TransactionStatus {
+  switch (raw) {
+    case "pending":
+      return "pending";
+    case "approved":
+      return "approved";
+    case "disputed":
+      return "disputed";
+    case "settled":
+      return "settled";
+    case "awaiting_barber_review":
+      return "awaiting_review";
+    case "adjusted":
+      return "adjusted";
+    default:
+      return "pending";
+  }
+}
+
 export function BarberOperationsDashboard() {
   const { session } = useAuth();
-  const barber = session ? createEmptyBarberProfileForSession(session) : null;
+  const isStaff = session?.role === "staff";
+  const showFinanceTab = canAccessBarbershopFinance(session?.role);
+  const baseProfile = React.useMemo(
+    () => (session ? createEmptyBarberProfileForSession(session) : null),
+    [session],
+  );
+  const [barber, setBarber] = React.useState<BarberProfile | null>(baseProfile);
+  const [stats, setStats] = React.useState<{
+    pending: number;
+    approved: number;
+    disputed: number;
+  }>({ pending: 0, approved: 0, disputed: 0 });
   const [tab, setTab] = React.useState<"overview" | "finance">("overview");
   const [page, setPage] = React.useState(1);
   const [reviewDay, setReviewDay] = React.useState(() => new Date().toISOString().slice(0, 10));
+  const [feed, setFeed] = React.useState<LedgerTransaction[]>([]);
+  const [feedTotal, setFeedTotal] = React.useState(0);
+  const [feedLoading, setFeedLoading] = React.useState(false);
   const pageSize = 4;
 
-  const feed = React.useMemo(() => {
-    if (!barber) return [];
-    return INITIAL_TRANSACTIONS.filter((t) => t.employeeId === barber.id);
-  }, [barber]);
+  const loadStats = React.useCallback(async () => {
+    if (!baseProfile) return;
+    try {
+      const s = await getBarberDashboard();
+      setBarber({
+        ...baseProfile,
+        commissionPct: Number(s.commission_pct ?? 0),
+        monthStats: {
+          revenue: Number(s.current_month_gross_recorded ?? 0),
+          services: Number(s.current_month_services_count ?? 0),
+          payout: Number(s.expected_payout_on_settled ?? 0),
+        },
+        allTimeStats: {
+          revenue: Number(s.all_time_gross_recorded ?? 0),
+          services: Number(s.all_time_services_count ?? 0),
+          payout: Number(s.all_time_commission_total ?? 0),
+        },
+      });
+      setStats({
+        pending: Number(s.pending_total ?? 0),
+        approved: Number(s.approved_totals ?? 0),
+        disputed: Number(s.disputed_total ?? 0),
+      });
+    } catch (e) {
+      if (e instanceof ApiError) return;
+    }
+  }, [baseProfile]);
 
-  const paged = React.useMemo(() => {
-    const start = (page - 1) * pageSize;
-    return feed.slice(start, start + pageSize);
-  }, [feed, page]);
+  const loadFeed = React.useCallback(async () => {
+    setFeedLoading(true);
+    try {
+      const [ledger, svc] = await Promise.all([
+        listBarberDayLedger(reviewDay, page, pageSize),
+        listServiceTypes(),
+      ]);
+      const names = new Map(svc.items.map((t) => [t.id, t.name]));
+      setFeed(ledger.items.map((r) => mapServiceRow(r, names)));
+      setFeedTotal(ledger.total);
+    } catch (e) {
+      if (e instanceof ApiError) toast.error(e.message);
+      setFeed([]);
+      setFeedTotal(0);
+    } finally {
+      setFeedLoading(false);
+    }
+  }, [reviewDay, page, pageSize]);
 
-  const pages = Math.max(1, Math.ceil(feed.length / pageSize));
+  React.useEffect(() => {
+    if (!baseProfile) return;
+    queueMicrotask(() => {
+      setBarber(baseProfile);
+      void loadStats();
+    });
+  }, [baseProfile, loadStats]);
 
-  if (!barber) {
+  React.useEffect(() => {
+    queueMicrotask(() => {
+      void loadFeed();
+    });
+  }, [loadFeed]);
+
+  const refreshAll = React.useCallback(() => {
+    void loadStats();
+    void loadFeed();
+  }, [loadStats, loadFeed]);
+
+  const pages = Math.max(1, Math.ceil(feedTotal / pageSize));
+
+  if (!session || !barber) {
     return (
       <div className="rounded-[var(--radius-lg)] border border-dashed border-[var(--border)] bg-[var(--card)] px-6 py-12 text-center">
         <p className="text-sm text-[var(--muted-foreground)]">Sign in to load your workspace.</p>
       </div>
     );
   }
+
+  const payoutLabel = isStaff ? "Expected salary" : "Expected payout";
+  const commissionLabel = isStaff ? "Compensation" : "Commission";
 
   return (
     <div className="space-y-8">
@@ -89,93 +206,120 @@ export function BarberOperationsDashboard() {
           Your performance
         </h2>
         <p className="max-w-xl text-sm text-[var(--muted-foreground)]">
-          Transparent numbers for the month, with quick access to what is approved, pending,
-          and on the way to payout.
+          Personal revenue, service totals, and reconciliation status — focused on your work, not
+          shop-wide finances.
         </p>
       </header>
 
-      <div className="inline-flex rounded-full border border-[var(--border)] bg-[var(--muted)]/40 p-1">
-        {(
-          [
-            ["overview", "Overview"],
-            ["finance", "Finance"],
-          ] as const
-        ).map(([id, label]) => (
-          <Button
-            key={id}
-            type="button"
-            size="sm"
-            variant="ghost"
-            className={
-              tab === id
-                ? "rounded-full bg-[var(--card)] shadow-[var(--shadow-card)]"
-                : "rounded-full text-[var(--muted-foreground)]"
-            }
-            onClick={() => setTab(id)}
-          >
-            {label}
-          </Button>
-        ))}
-      </div>
+      {showFinanceTab ? (
+        <div className="inline-flex rounded-full border border-[var(--border)] bg-[var(--muted)]/40 p-1">
+          {(
+            [
+              ["overview", "Overview"],
+              ["finance", "Finance"],
+            ] as const
+          ).map(([id, label]) => (
+            <Button
+              key={id}
+              type="button"
+              size="sm"
+              variant="ghost"
+              className={
+                tab === id
+                  ? "rounded-full bg-[var(--card)] shadow-[var(--shadow-card)]"
+                  : "rounded-full text-[var(--muted-foreground)]"
+              }
+              onClick={() => setTab(id)}
+            >
+              {label}
+            </Button>
+          ))}
+        </div>
+      ) : null}
 
-      {tab === "overview" ? (
+      {tab === "overview" || !showFinanceTab ? (
         <>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
             <Card className="border-[var(--border)]/90 sm:col-span-2">
               <CardContent className="space-y-1 p-5 pt-5">
                 <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
-                  Current month revenue
+                  Revenue generated
                 </p>
                 <p className="font-[family-name:var(--font-serif)] text-3xl font-semibold tracking-tight text-[var(--foreground)]">
                   {formatNaira(barber.monthStats.revenue)}
                 </p>
                 <p className="pt-1 text-xs text-[var(--muted-foreground)]">
-                  No financial data available for this period until your services and sales post to
-                  the ledger.
+                  Recorded service revenue for the current month.
                 </p>
               </CardContent>
             </Card>
             <Card>
               <CardContent className="space-y-1 p-5 pt-5">
                 <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
-                  Commission
+                  Services rendered
+                </p>
+                <p className="text-2xl font-semibold tabular-nums text-[var(--foreground)]">
+                  {barber.monthStats.services}
+                </p>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="space-y-1 p-5 pt-5">
+                <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
+                  {commissionLabel}
                 </p>
                 <p className="text-2xl font-semibold tabular-nums text-[var(--foreground)]">
                   {barber.commissionPct}%
                 </p>
-                <p className="pt-1 text-xs text-[var(--muted-foreground)]">
-                  Set when your profile is linked to payroll.
-                </p>
               </CardContent>
             </Card>
             <Card>
               <CardContent className="space-y-1 p-5 pt-5">
                 <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
-                  Expected payout
+                  {payoutLabel}
                 </p>
                 <p className="text-2xl font-semibold tabular-nums text-emerald-700 dark:text-emerald-300">
                   {formatNaira(barber.monthStats.payout)}
                 </p>
               </CardContent>
             </Card>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-3">
             <Card>
               <CardContent className="space-y-1 p-5 pt-5">
                 <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
-                  Approved vs pending
+                  Approved
                 </p>
-                <p className="text-sm text-[var(--foreground)]">
-                  <span className="font-semibold tabular-nums">{formatNaira(0)}</span>
-                  <span className="text-[var(--muted-foreground)]"> approved</span>
+                <p className="text-xl font-semibold tabular-nums text-[var(--foreground)]">
+                  {formatNaira(stats.approved)}
                 </p>
-                <p className="text-sm text-[var(--muted-foreground)]">
-                  <span className="font-medium tabular-nums text-amber-800 dark:text-amber-200">
-                    {formatNaira(0)}
-                  </span>{" "}
-                  pending
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="space-y-1 p-5 pt-5">
+                <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
+                  Pending
                 </p>
-                <p className="pt-1 text-xs text-[var(--muted-foreground)]">
-                  Split updates as tickets move through review.
+                <p className="text-xl font-semibold tabular-nums text-amber-800 dark:text-amber-200">
+                  {formatNaira(stats.pending)}
                 </p>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="space-y-1 p-5 pt-5">
+                <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
+                  Disputed
+                </p>
+                <p className="text-xl font-semibold tabular-nums text-rose-700 dark:text-rose-300">
+                  {formatNaira(stats.disputed)}
+                </p>
+                <Link
+                  href="/barbershop/reconciliation"
+                  className="mt-2 inline-block text-xs text-[var(--muted-foreground)] underline-offset-2 hover:underline"
+                >
+                  Open reconciliation
+                </Link>
               </CardContent>
             </Card>
           </div>
@@ -188,7 +332,10 @@ export function BarberOperationsDashboard() {
               <Input
                 type="date"
                 value={reviewDay}
-                onChange={(e) => setReviewDay(e.target.value)}
+                onChange={(e) => {
+                  setReviewDay(e.target.value);
+                  setPage(1);
+                }}
                 className="mt-1.5 h-9 w-44"
               />
             </div>
@@ -196,20 +343,27 @@ export function BarberOperationsDashboard() {
 
           <div>
             <p className="mb-3 text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
-              Daily transaction feed
+              Daily service feed
             </p>
-            {feed.length === 0 ? (
+            {feedLoading ? (
               <div className="rounded-[var(--radius-md)] border border-dashed border-[var(--border)] bg-[var(--card)] px-4 py-12 text-center">
-                <p className="text-sm font-medium text-[var(--foreground)]">No transactions recorded yet</p>
+                <p className="text-sm text-[var(--muted-foreground)]">Loading services…</p>
+              </div>
+            ) : feed.length === 0 ? (
+              <div className="rounded-[var(--radius-md)] border border-dashed border-[var(--border)] bg-[var(--card)] px-4 py-12 text-center">
+                <p className="text-sm font-medium text-[var(--foreground)]">No services for this day</p>
                 <p className="mx-auto mt-2 max-w-md text-xs leading-relaxed text-[var(--muted-foreground)]">
-                  Your chair and retail lines will populate here as soon as finance posts approved
-                  entries against your ID.
+                  Record a service to start your index for the day. Entries stay pending until
+                  reconciliation.
                 </p>
+                <div className="mt-6 flex justify-center">
+                  <RecordServiceFab variant="inline" onCreated={refreshAll} />
+                </div>
               </div>
             ) : (
               <>
                 <ul className="space-y-2">
-                  {paged.map((t) => (
+                  {feed.map((t) => (
                     <LedgerRow key={t.id} t={t} />
                   ))}
                 </ul>
@@ -277,15 +431,20 @@ export function BarberOperationsDashboard() {
           </div>
           <div>
             <p className="mb-3 text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
-              Reconciliation history
+              Reconciliation
             </p>
             <div className="rounded-[var(--radius-md)] border border-dashed border-[var(--border)] bg-[var(--card)] px-4 py-10 text-center text-sm text-[var(--muted-foreground)]">
-              No reconciliation history yet. Manager adjustments to your tickets will appear here
-              with before and after amounts.
+              Review manager proposals and accept or dispute daily totals on the{" "}
+              <Link href="/barbershop/reconciliation" className="font-medium text-[var(--foreground)] underline-offset-2 hover:underline">
+                reconciliation page
+              </Link>
+              .
             </div>
           </div>
         </div>
       )}
+
+      <RecordServiceFab onCreated={refreshAll} />
     </div>
   );
 }

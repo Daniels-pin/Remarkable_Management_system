@@ -7,6 +7,7 @@ import * as React from "react";
 
 import { RemarkableWordmark } from "@/components/branding/remarkable-logo";
 import { useAuth } from "@/components/providers/auth-provider";
+import { getHomePath } from "@/lib/routing";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -20,6 +21,7 @@ import {
 export function MinimalHeader() {
   const { setTheme, resolvedTheme } = useTheme();
   const { session, logout } = useAuth();
+  const homeHref = getHomePath(session?.role);
   const [mounted, setMounted] = React.useState(false);
   React.useEffect(() => {
     const id = requestAnimationFrame(() => setMounted(true));
@@ -29,7 +31,7 @@ export function MinimalHeader() {
   return (
     <header className="flex h-14 items-center justify-between border-b border-[var(--border)] bg-[var(--background)]/85 px-4 backdrop-blur-md supports-[backdrop-filter]:bg-[var(--background)]/70 md:px-8">
       <Link
-        href="/modules"
+        href={homeHref}
         className="opacity-90 transition-opacity hover:opacity-100"
       >
         <RemarkableWordmark variant="header" />
