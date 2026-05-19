@@ -22,8 +22,8 @@ export type NavItem = {
 
 const managerUp: UserRole[] = ["admin", "manager"];
 const employeeOps: UserRole[] = ["admin", "manager", "staff", "barber"];
-/** Commission archives and shop financial months — not for operational staff. */
-const barbershopFinance: UserRole[] = ["admin", "manager", "barber"];
+/** Personal earnings archive for barbers/staff; shop finance for management. */
+const barbershopFinance: UserRole[] = ["admin", "manager", "barber", "staff"];
 
 export const barbershopNav: NavItem[] = [
   {

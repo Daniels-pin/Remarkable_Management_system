@@ -1,6 +1,10 @@
 "use client";
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import {
+  MonthPostureSummary,
+  type MonthPostureData,
+} from "@/components/ops/month-posture-summary";
 import { TeamPosturePill } from "@/components/ops/team-posture-pill";
 import { formatNaira, formatServicesCount } from "@/lib/format";
 import type { ReconciliationPosture } from "@/lib/api";
@@ -15,6 +19,7 @@ export type ManagerTeamMemberSummaryProps = {
   monthRevenue: number;
   monthServices: number;
   reconciliationPosture: ReconciliationPosture;
+  monthPosture: MonthPostureData;
 };
 
 export function ManagerTeamMemberSummary({
@@ -26,6 +31,7 @@ export function ManagerTeamMemberSummary({
   monthRevenue,
   monthServices,
   reconciliationPosture,
+  monthPosture,
 }: ManagerTeamMemberSummaryProps) {
   return (
     <div className="rounded-[var(--radius-xl)] border border-[var(--border)] bg-[var(--card)] p-6 shadow-[var(--shadow-card)]">
@@ -66,6 +72,13 @@ export function ManagerTeamMemberSummary({
               value={formatServicesCount(monthServices)}
               muted
             />
+          </div>
+
+          <div className="space-y-3 border-t border-[var(--border)]/80 pt-5">
+            <p className="text-[11px] font-medium uppercase tracking-[0.12em] text-[var(--muted-foreground)]">
+              Financial summary
+            </p>
+            <MonthPostureSummary data={monthPosture} />
           </div>
         </div>
       </div>

@@ -10,26 +10,29 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.core.deps import ActorContext, get_actor_context, get_db
 from app.models.barber_daily_summary import BarberDailySummary
-from app.models.commission import MonthlyCommissionStatement
+from app.services.payroll_service import (
+    barber_all_time_approved_total,
+    barber_all_time_expected_payout,
+    expected_month_payout,
+)
 from app.models.enums import (
     AccountStatus,
     LedgerEntryType,
     RecordLifecycleState,
-    SalaryType,
     UserRole,
 )
 from app.models.catalog import ServiceType
 from app.models.ledger import LedgerEntry
 from app.models.user import User
 from app.services.business_time import shop_tz
+from app.services import month_lifecycle_service
+from app.services import ledger_service
 from app.services.ledger_service import (
     barber_all_time_gross_recorded,
     barber_all_time_services_count,
     barber_month_gross_recorded,
     barber_month_revenue_buckets,
     barber_month_services_count,
-    list_barber_day_entries,
-    reconciliation_comparison_status,
 )
 
 router = APIRouter(prefix="/barbershop/directory", tags=["barbershop"])
@@ -65,27 +68,14 @@ def _serialize_team_member(u: User, *, include_payroll: bool = True) -> dict:
     return base
 
 
-def _posture_label(buckets: dict[str, Decimal]) -> str:
-    if buckets["disputed_total"] > 0:
-        return "disputed"
-    if buckets["awaiting_review_total"] > 0:
-        return "awaiting_review"
+def _posture_label(buckets: dict) -> str:
+    if buckets.get("mismatch_indexes"):
+        return "mismatch"
     if buckets["pending_total"] > 0:
         return "pending"
-    if buckets["adjusted_or_approved_total"] > 0:
-        return "in_review"
-    if buckets["settled_total"] > 0:
-        return "settled"
+    if buckets["approved_total"] > 0:
+        return "approved"
     return "clear"
-
-
-def _expected_month_payout(u: User, *, settled: Decimal, commission_pct: Decimal) -> Decimal:
-    commission_amount = (settled * commission_pct / 100) if commission_pct else Decimal(0)
-    if u.salary_type == SalaryType.FIXED and u.fixed_salary is not None:
-        return Decimal(u.fixed_salary)
-    if u.salary_type == SalaryType.FIXED_OR_COMMISSION and u.fixed_salary is not None:
-        return max(Decimal(u.fixed_salary), commission_amount)
-    return commission_amount
 
 
 def _month_stats_payload(
@@ -96,13 +86,10 @@ def _month_stats_payload(
     services_count = barber_month_services_count(db, barber_user_id=u.id, year=year, month=month)
     all_time_gross = barber_all_time_gross_recorded(db, barber_user_id=u.id)
     all_time_services = barber_all_time_services_count(db, barber_user_id=u.id)
-    all_time_payout = (
-        db.query(func.coalesce(func.sum(MonthlyCommissionStatement.commission_amount), 0))
-        .filter(MonthlyCommissionStatement.user_id == u.id)
-        .scalar()
-    )
+    all_time_approved = barber_all_time_approved_total(db, barber_user_id=u.id)
+    all_time_payout = barber_all_time_expected_payout(db, user=u)
     pct = u.commission_pct or Decimal(0)
-    settled = buckets["settled_total"]
+    approved = buckets["approved_total"]
     payload = {
         "found": True,
         "year": year,
@@ -111,14 +98,12 @@ def _month_stats_payload(
         "current_month_gross_recorded": str(gross),
         "current_month_services_count": services_count,
         "pending_total": str(buckets["pending_total"]),
-        "awaiting_review_total": str(buckets["awaiting_review_total"]),
-        "adjusted_or_approved_total": str(buckets["adjusted_or_approved_total"]),
-        "settled_total": str(buckets["settled_total"]),
-        "disputed_total": str(buckets["disputed_total"]),
+        "approved_total": str(buckets["approved_total"]),
+        "mismatch_indexes": buckets["mismatch_indexes"],
         "reconciliation_posture": _posture_label(buckets),
     }
     if include_payroll:
-        expected_payout = _expected_month_payout(u, settled=settled, commission_pct=pct)
+        expected_payout = expected_month_payout(u, settled=approved, commission_pct=pct)
         payload.update(
             {
                 "commission_pct": str(pct),
@@ -126,8 +111,9 @@ def _month_stats_payload(
                 "salary_type": str(u.salary_type) if u.salary_type else None,
                 "all_time_gross_recorded": str(all_time_gross),
                 "all_time_services_count": all_time_services,
-                "all_time_commission_total": str(all_time_payout or 0),
-                "expected_payout_on_settled": str(expected_payout),
+                "all_time_approved_total": str(all_time_approved),
+                "all_time_commission_total": str(all_time_payout),
+                "expected_payout_on_approved": str(expected_payout),
             }
         )
     return payload
@@ -177,7 +163,7 @@ def list_team(
         gross = barber_month_gross_recorded(db, barber_user_id=u.id, year=y, month=m)
         services = barber_month_services_count(db, barber_user_id=u.id, year=y, month=m)
         pct = u.commission_pct or Decimal(0)
-        expected = _expected_month_payout(u, settled=buckets["settled_total"], commission_pct=pct)
+        expected = expected_month_payout(u, settled=buckets["approved_total"], commission_pct=pct)
         include_payroll = actor.user.role == UserRole.ADMIN
         base = _serialize_team_member(u, include_payroll=include_payroll)
         base.update(
@@ -276,35 +262,70 @@ def _service_type_names(db: Session, rows: list[LedgerEntry]) -> dict[uuid.UUID,
     }
 
 
-def _comparison_row_payload(row: LedgerEntry, *, service_name: str | None) -> dict:
-    label = service_name or "Service"
-    employee_amt = (
-        None
-        if row.is_manager_created_without_barber
-        else row.original_barber_amount if row.original_barber_amount is not None else row.amount
+
+
+@router.get("/team/{member_user_id}/reconciliation-months")
+def team_member_operational_months(
+    member_user_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    actor: ActorContext = Depends(get_actor_context),
+) -> dict:
+    _require_management(actor)
+    if _get_team_member(db, member_user_id) is None:
+        raise HTTPException(status_code=404, detail={"message": "Not found", "code": "NOT_FOUND"})
+    open_month = month_lifecycle_service.get_open_financial_month(db)
+    open_key = (open_month.year, open_month.month) if open_month else None
+    items = []
+    for year, month in ledger_service.barber_operational_month_keys(
+        db, barber_user_id=member_user_id
+    ):
+        fm = month_lifecycle_service.get_financial_month(db, year=year, month=month)
+        items.append(
+            {
+                "year": year,
+                "month": month,
+                "state": str(fm.state) if fm else "locked",
+                "is_current": open_key == (year, month),
+            }
+        )
+    return {"items": items}
+
+
+@router.get("/team/{member_user_id}/reconciliation-history")
+def team_member_reconciliation_history(
+    member_user_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    actor: ActorContext = Depends(get_actor_context),
+    year: int | None = None,
+    month: int | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(15, ge=1, le=50),
+) -> dict:
+    """Paginated indexed reconciliation history for a team member calendar month."""
+    _require_management(actor)
+    if _get_team_member(db, member_user_id) is None:
+        raise HTTPException(status_code=404, detail={"message": "Not found", "code": "NOT_FOUND"})
+
+    now = datetime.now(shop_tz())
+    y, m = year or now.year, month or now.month
+    items, total = ledger_service.list_barber_month_reconciliation(
+        db,
+        barber_user_id=member_user_id,
+        year=y,
+        month=m,
+        page=page,
+        page_size=page_size,
     )
-    manager_amt = row.manager_approved_amount
+    open_month = month_lifecycle_service.get_open_financial_month(db)
+    is_current = open_month is not None and (y, m) == (open_month.year, open_month.month)
     return {
-        "id": str(row.id),
-        "index": row.barber_sequence_index,
-        "index_label": f"#{row.barber_sequence_index:03d}" if row.barber_sequence_index else None,
-        "service_name": label,
-        "employee_amount": str(employee_amt) if employee_amt is not None else None,
-        "manager_amount": str(manager_amt) if manager_amt is not None else None,
-        "employee_label": (
-            f"{label} — ₦{employee_amt}"
-            if employee_amt is not None
-            else None
-        ),
-        "manager_label": (
-            f"{label} — ₦{manager_amt}" if manager_amt is not None else None
-        ),
-        "comparison_status": reconciliation_comparison_status(row),
-        "reconciliation_status": str(row.reconciliation_status)
-        if row.reconciliation_status
-        else None,
-        "business_date": row.business_date.isoformat() if row.business_date else None,
-        "occurred_at": row.occurred_at.isoformat(),
+        "year": y,
+        "month": m,
+        "is_current_month": is_current,
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "items": items,
     }
 
 
@@ -323,14 +344,13 @@ def team_member_reconciliation_workspace(
         raise HTTPException(status_code=404, detail={"message": "Not found", "code": "NOT_FOUND"})
 
     day = business_date or datetime.now(shop_tz()).date()
-    rows, total = list_barber_day_entries(
+    items, total = ledger_service.list_barber_day_reconciliation(
         db,
         barber_user_id=member_user_id,
         business_day=day,
         page=page,
         page_size=page_size,
     )
-    names = _service_type_names(db, rows)
     summary = (
         db.query(BarberDailySummary)
         .filter(
@@ -345,13 +365,7 @@ def team_member_reconciliation_workspace(
         "page_size": page_size,
         "total": total,
         "daily_summary_status": str(summary.status) if summary else None,
-        "items": [
-            _comparison_row_payload(
-                r,
-                service_name=names.get(r.service_type_id) if r.service_type_id else None,
-            )
-            for r in rows
-        ],
+        "items": items,
     }
 
 

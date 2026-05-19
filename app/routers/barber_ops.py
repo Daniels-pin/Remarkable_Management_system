@@ -5,11 +5,15 @@ from decimal import Decimal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.deps import ActorContext, get_service_provider_actor, get_db
-from app.models.commission import MonthlyCommissionStatement
+from app.models.catalog import ServiceType
+from app.services.payroll_service import (
+    barber_all_time_approved_total,
+    barber_all_time_expected_payout,
+    expected_month_payout,
+)
 from app.models.reconciliation_timeline import ReconciliationTimelineEvent
 from app.models.user import User
 from app.schemas.operations import (
@@ -17,29 +21,55 @@ from app.schemas.operations import (
     BarberServiceCreateBody,
     BarberServiceUpdateBody,
 )
-from app.services import ledger_service, reconciliation_service
+from app.services import ledger_service, month_lifecycle_service, reconciliation_service
 from app.services.business_time import shop_tz
 
 router = APIRouter(prefix="/barber", tags=["barber"])
 
 
-def _ledger_row(e) -> dict:
-    orig = e.original_barber_amount
-    mgr = e.manager_approved_amount
+def _service_type_names(db: Session, rows: list) -> dict:
+    ids = {r.service_type_id for r in rows if r.service_type_id}
+    if not ids:
+        return {}
+    return {
+        row.id: row.name
+        for row in db.query(ServiceType).filter(ServiceType.id.in_(ids)).all()
+    }
+
+
+def _indexed_reconciliation_row(
+    db: Session,
+    e,
+    *,
+    service_name: str | None = None,
+) -> dict:
+    """Serialize a single service ledger row after create/update."""
+    label = service_name or "Service"
+    employee, manager = ledger_service.paired_rows_for_service(db, e)
+    comparison = ledger_service.comparison_status_for_service_row(db, e) or "waiting_for_reconciliation"
     return {
         "id": str(e.id),
+        "index": e.barber_sequence_index,
         "barber_sequence_index": e.barber_sequence_index,
+        "index_label": f"#{e.barber_sequence_index:03d}" if e.barber_sequence_index else None,
         "occurred_at": e.occurred_at.isoformat(),
         "business_date": e.business_date.isoformat() if e.business_date else None,
         "service_type_id": str(e.service_type_id) if e.service_type_id else None,
+        "service_name": label,
         "amount": str(e.amount),
-        "original_barber_amount": str(orig) if orig is not None else None,
-        "manager_approved_amount": str(mgr) if mgr is not None else None,
+        "employee_amount": str(employee.amount) if employee else None,
+        "manager_amount": str(manager.amount) if manager else None,
+        "comparison_status": comparison,
         "reconciliation_status": str(e.reconciliation_status) if e.reconciliation_status else None,
-        "is_manager_created_without_barber": e.is_manager_created_without_barber,
+        "is_manager_created_without_barber": employee is None and manager is not None,
         "payment_method": str(e.payment_method) if e.payment_method else None,
         "note": e.note,
+        "record_stream": str(e.record_stream) if e.record_stream else None,
     }
+
+
+def _ledger_row(db: Session, e) -> dict:
+    return _indexed_reconciliation_row(db, e)
 
 
 @router.get("/dashboard")
@@ -61,14 +91,11 @@ def barber_dashboard(
     )
     all_time_gross = ledger_service.barber_all_time_gross_recorded(db, barber_user_id=user.id)
     all_time_services = ledger_service.barber_all_time_services_count(db, barber_user_id=user.id)
-    all_time_payout = (
-        db.query(func.coalesce(func.sum(MonthlyCommissionStatement.commission_amount), 0))
-        .filter(MonthlyCommissionStatement.user_id == user.id)
-        .scalar()
-    )
+    all_time_approved = barber_all_time_approved_total(db, barber_user_id=user.id)
+    all_time_payout = barber_all_time_expected_payout(db, user=user)
     pct = user.commission_pct or Decimal("0")
-    settled = buckets["settled_total"]
-    expected_payout = (settled * pct / Decimal("100")).quantize(Decimal("0.01"))
+    approved = buckets["approved_total"]
+    expected_payout = expected_month_payout(user, settled=approved, commission_pct=pct)
     return {
         "year": y,
         "month": m,
@@ -77,14 +104,12 @@ def barber_dashboard(
         "current_month_services_count": services_count,
         "all_time_gross_recorded": str(all_time_gross),
         "all_time_services_count": all_time_services,
-        "all_time_commission_total": str(all_time_payout or 0),
+        "all_time_approved_total": str(all_time_approved),
+        "all_time_commission_total": str(all_time_payout),
         "pending_total": str(buckets["pending_total"]),
-        "awaiting_review_total": str(buckets["awaiting_review_total"]),
-        "adjusted_or_approved_total": str(buckets["adjusted_or_approved_total"]),
-        "approved_totals": str(buckets["awaiting_review_total"] + buckets["settled_total"]),
-        "settled_total": str(buckets["settled_total"]),
-        "expected_payout_on_settled": str(expected_payout),
-        "disputed_total": str(buckets["disputed_total"]),
+        "approved_total": str(buckets["approved_total"]),
+        "mismatch_indexes": buckets["mismatch_indexes"],
+        "expected_payout_on_approved": str(expected_payout),
         "used_shop_timezone": str(shop_tz()),
     }
 
@@ -97,7 +122,7 @@ def barber_day_ledger(
     page: int = Query(1, ge=1),
     page_size: int = Query(10, ge=1, le=50),
 ) -> dict:
-    rows, total = ledger_service.list_barber_day_entries(
+    items, total = ledger_service.list_barber_day_reconciliation(
         db,
         barber_user_id=actor.user.id,
         business_day=business_date,
@@ -109,7 +134,95 @@ def barber_day_ledger(
         "page": page,
         "page_size": page_size,
         "total": total,
-        "items": [_ledger_row(r) for r in rows],
+        "items": items,
+    }
+
+
+@router.get("/reconciliation/workspace")
+def barber_reconciliation_workspace(
+    db: Session = Depends(get_db),
+    actor: ActorContext = Depends(get_service_provider_actor),
+    business_date: date = Query(..., description="Business day in YYYY-MM-DD"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=50),
+) -> dict:
+    """Indexed side-by-side employee vs manager lines for the provider daily ledger."""
+    items, total = ledger_service.list_barber_day_reconciliation(
+        db,
+        barber_user_id=actor.user.id,
+        business_day=business_date,
+        page=page,
+        page_size=page_size,
+    )
+    summary = reconciliation_service.get_or_create_daily_summary(
+        db, barber_user_id=actor.user.id, business_day=business_date
+    )
+    return {
+        "business_date": business_date.isoformat(),
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "daily_summary_status": str(summary.status),
+        "items": items,
+    }
+
+
+@router.get("/reconciliation/months")
+def barber_operational_months(
+    db: Session = Depends(get_db),
+    actor: ActorContext = Depends(get_service_provider_actor),
+) -> dict:
+    """Calendar months with indexed service history for month picker archives."""
+    open_month = month_lifecycle_service.get_open_financial_month(db)
+    open_key = (open_month.year, open_month.month) if open_month else None
+    items = []
+    for year, month in ledger_service.barber_operational_month_keys(
+        db, barber_user_id=actor.user.id
+    ):
+        fm = month_lifecycle_service.get_financial_month(db, year=year, month=month)
+        state = str(fm.state) if fm else "locked"
+        items.append(
+            {
+                "year": year,
+                "month": month,
+                "state": state,
+                "is_current": open_key == (year, month),
+            }
+        )
+    return {"items": items}
+
+
+@router.get("/reconciliation/history")
+def barber_reconciliation_history(
+    db: Session = Depends(get_db),
+    actor: ActorContext = Depends(get_service_provider_actor),
+    year: int | None = None,
+    month: int | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(15, ge=1, le=50),
+) -> dict:
+    """Paginated indexed operational history for a calendar month."""
+    now = datetime.now(shop_tz())
+    y, m = year or now.year, month or now.month
+    items, total = ledger_service.list_barber_month_reconciliation(
+        db,
+        barber_user_id=actor.user.id,
+        year=y,
+        month=m,
+        page=page,
+        page_size=page_size,
+    )
+    open_month = month_lifecycle_service.get_open_financial_month(db)
+    is_current = open_month is not None and (y, m) == (open_month.year, open_month.month)
+    return {
+        "year": y,
+        "month": m,
+        "is_current_month": is_current,
+        "read_only": not is_current,
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "items": items,
     }
 
 
@@ -132,7 +245,7 @@ def barber_create_service(
     )
     db.commit()
     db.refresh(row)
-    return _ledger_row(row)
+    return _ledger_row(db, row)
 
 
 @router.patch("/ledger/service/{entry_id}")
@@ -155,7 +268,7 @@ def barber_update_service(
     )
     db.commit()
     db.refresh(row)
-    return _ledger_row(row)
+    return _ledger_row(db, row)
 
 
 @router.delete("/ledger/service/{entry_id}")
@@ -188,7 +301,7 @@ def barber_reconciliation_day(
     issues = ledger_service.compute_index_reconciliation_issues(
         db, barber_user_id=actor.user.id, business_day=business_day
     )
-    entries, _ = ledger_service.list_barber_day_entries(
+    entries, _ = ledger_service.list_barber_day_reconciliation(
         db, barber_user_id=actor.user.id, business_day=business_day, page=1, page_size=500
     )
     timeline = (
@@ -211,7 +324,7 @@ def barber_reconciliation_day(
             if summary.admin_final_day_total is not None
             else None,
         },
-        "entries": [_ledger_row(e) for e in entries],
+        "entries": entries,
         "issues": issues,
         "timeline": [
             {

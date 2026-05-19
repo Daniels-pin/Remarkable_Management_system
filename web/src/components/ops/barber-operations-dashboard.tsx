@@ -4,6 +4,7 @@ import * as React from "react";
 import Link from "next/link";
 
 import { BarberProfileView } from "@/components/ops/barber-profile-view";
+import { MonthPostureSummary } from "@/components/ops/month-posture-summary";
 import { RecordServiceFab } from "@/components/ops/record-service-fab";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -19,55 +20,62 @@ import {
 } from "@/lib/api";
 import { formatNaira, formatTimeLabel } from "@/lib/format";
 import { createEmptyBarberProfileForSession, INITIAL_PAYOUT_HISTORY } from "@/lib/ops-initial-state";
-import type { BarberProfile, LedgerTransaction, TransactionStatus } from "@/lib/ops-types";
+import type { BarberProfile, LedgerTransaction } from "@/lib/ops-types";
+import { ReconciliationComparisonBadge } from "@/components/ops/reconciliation-comparison-badge";
 import { StatusBadge } from "@/components/ops/status-badge";
+import {
+  resolveOperationalDisplayAmount,
+  resolveTransactionStatus,
+} from "@/lib/reconciliation-status";
 import { toast } from "sonner";
 
 function LedgerRow({ t }: { t: LedgerTransaction }) {
+  const payment = t.paymentMethod?.replace(/_/g, " ") ?? null;
   return (
-    <li className="flex flex-col gap-2 rounded-[var(--radius-md)] border border-[var(--border)]/80 bg-[var(--card)] px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-      <div className="min-w-0 space-y-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-[10px] font-medium tabular-nums text-[var(--muted-foreground)]">
-            #{t.index}
-          </span>
-          <StatusBadge status={t.status} />
-        </div>
-        <p className="truncate text-sm font-medium text-[var(--foreground)]">
+    <li className="flex items-center gap-3 border-b border-[var(--border)]/70 px-3 py-1.5 last:border-b-0">
+      <span className="shrink-0 font-mono text-[11px] font-medium tabular-nums text-[var(--muted-foreground)]">
+        #{String(t.index).padStart(3, "0")}
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-xs font-medium text-[var(--foreground)]">
           {t.serviceType ?? "Service"}
         </p>
-        {t.previousAmount != null ? (
-          <p className="text-xs text-[var(--muted-foreground)]">
-            Edited from{" "}
-            <span className="tabular-nums text-[var(--foreground)]">{formatNaira(t.previousAmount)}</span>
-            {" → "}
-            <span className="tabular-nums font-medium text-[var(--foreground)]">{formatNaira(t.amount)}</span>
-          </p>
-        ) : null}
-        <p className="text-[11px] text-[var(--muted-foreground)]">{formatTimeLabel(t.createdAt)}</p>
+        <p className="text-[10px] text-[var(--muted-foreground)]">{formatTimeLabel(t.createdAt)}</p>
       </div>
-      <div className="text-right">
-        <p className="font-[family-name:var(--font-serif)] text-lg font-semibold tabular-nums text-[var(--foreground)]">
-          {formatNaira(t.amount)}
-        </p>
-        {t.paymentMethod ? (
-          <p className="text-xs capitalize text-[var(--muted-foreground)]">{t.paymentMethod}</p>
-        ) : null}
+      <div className="shrink-0">
+        {t.comparisonStatus ? (
+          <ReconciliationComparisonBadge status={t.comparisonStatus} compact />
+        ) : (
+          <StatusBadge status={t.status} />
+        )}
+      </div>
+      <div className="shrink-0 text-right">
+        <p className="text-xs font-medium tabular-nums text-[var(--foreground)]">{formatNaira(t.amount)}</p>
+        {payment ? <p className="text-[10px] capitalize text-[var(--muted-foreground)]">{payment}</p> : null}
       </div>
     </li>
   );
 }
 
 function mapServiceRow(r: BarberLedgerServiceRow, serviceNames: Map<string, string>): LedgerTransaction {
-  const amount = Number(r.amount);
-  const status = statusFromReconciliation(r.reconciliation_status);
+  const amount = resolveOperationalDisplayAmount(r);
+  const status = resolveTransactionStatus({
+    entryType: "service",
+    comparisonStatus: r.comparison_status,
+    workflowStatus: r.reconciliation_status,
+  });
+  const serviceTypeId =
+    r.service_type_id ??
+    r.employee?.service_type_id ??
+    r.manager?.service_type_id ??
+    null;
   return {
     id: r.id,
     index: r.barber_sequence_index ?? 0,
     type: "service",
     employeeName: null,
     employeeId: null,
-    amount: Number.isFinite(amount) ? amount : 0,
+    amount,
     paymentMethod:
       r.payment_method === "cash" || r.payment_method === "transfer" || r.payment_method === "pos"
         ? r.payment_method
@@ -75,27 +83,9 @@ function mapServiceRow(r: BarberLedgerServiceRow, serviceNames: Map<string, stri
     note: r.note,
     status,
     createdAt: r.occurred_at,
-    serviceType: r.service_type_id ? serviceNames.get(r.service_type_id) : undefined,
+    serviceType: r.service_name ?? (serviceTypeId ? serviceNames.get(serviceTypeId) : undefined),
+    comparisonStatus: r.comparison_status,
   };
-}
-
-function statusFromReconciliation(raw: string | null): TransactionStatus {
-  switch (raw) {
-    case "pending":
-      return "pending";
-    case "approved":
-      return "approved";
-    case "disputed":
-      return "disputed";
-    case "settled":
-      return "settled";
-    case "awaiting_barber_review":
-      return "awaiting_review";
-    case "adjusted":
-      return "adjusted";
-    default:
-      return "pending";
-  }
 }
 
 export function BarberOperationsDashboard() {
@@ -107,11 +97,11 @@ export function BarberOperationsDashboard() {
     [session],
   );
   const [barber, setBarber] = React.useState<BarberProfile | null>(baseProfile);
-  const [stats, setStats] = React.useState<{
-    pending: number;
-    approved: number;
-    disputed: number;
-  }>({ pending: 0, approved: 0, disputed: 0 });
+  const [monthPosture, setMonthPosture] = React.useState({
+    pendingTotal: 0,
+    approvedTotal: 0,
+    mismatchIndexes: [] as number[],
+  });
   const [tab, setTab] = React.useState<"overview" | "finance">("overview");
   const [page, setPage] = React.useState(1);
   const [reviewDay, setReviewDay] = React.useState(() => new Date().toISOString().slice(0, 10));
@@ -130,18 +120,21 @@ export function BarberOperationsDashboard() {
         monthStats: {
           revenue: Number(s.current_month_gross_recorded ?? 0),
           services: Number(s.current_month_services_count ?? 0),
-          payout: Number(s.expected_payout_on_settled ?? 0),
+          approved: Number(s.approved_total ?? 0),
+          pending: Number(s.pending_total ?? 0),
+          payout: Number(s.expected_payout_on_approved ?? 0),
         },
         allTimeStats: {
           revenue: Number(s.all_time_gross_recorded ?? 0),
           services: Number(s.all_time_services_count ?? 0),
+          approved: Number(s.all_time_approved_total ?? 0),
           payout: Number(s.all_time_commission_total ?? 0),
         },
       });
-      setStats({
-        pending: Number(s.pending_total ?? 0),
-        approved: Number(s.approved_totals ?? 0),
-        disputed: Number(s.disputed_total ?? 0),
+      setMonthPosture({
+        pendingTotal: Number(s.pending_total ?? 0),
+        approvedTotal: Number(s.approved_total ?? 0),
+        mismatchIndexes: s.mismatch_indexes ?? [],
       });
     } catch (e) {
       if (e instanceof ApiError) return;
@@ -239,6 +232,19 @@ export function BarberOperationsDashboard() {
 
       {tab === "overview" || !showFinanceTab ? (
         <>
+          <section className="space-y-3">
+            <div className="space-y-1">
+              <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
+                Financial summary
+              </p>
+              <p className="text-xs text-[var(--muted-foreground)]">
+                Your reconciliation totals for the current month — approved, pending, and mismatched
+                indexes.
+              </p>
+            </div>
+            <MonthPostureSummary data={monthPosture} />
+          </section>
+
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
             <Card className="border-[var(--border)]/90 sm:col-span-2">
               <CardContent className="space-y-1 p-5 pt-5">
@@ -285,45 +291,6 @@ export function BarberOperationsDashboard() {
             </Card>
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-3">
-            <Card>
-              <CardContent className="space-y-1 p-5 pt-5">
-                <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
-                  Approved
-                </p>
-                <p className="text-xl font-semibold tabular-nums text-[var(--foreground)]">
-                  {formatNaira(stats.approved)}
-                </p>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className="space-y-1 p-5 pt-5">
-                <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
-                  Pending
-                </p>
-                <p className="text-xl font-semibold tabular-nums text-amber-800 dark:text-amber-200">
-                  {formatNaira(stats.pending)}
-                </p>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className="space-y-1 p-5 pt-5">
-                <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
-                  Disputed
-                </p>
-                <p className="text-xl font-semibold tabular-nums text-rose-700 dark:text-rose-300">
-                  {formatNaira(stats.disputed)}
-                </p>
-                <Link
-                  href="/barbershop/reconciliation"
-                  className="mt-2 inline-block text-xs text-[var(--muted-foreground)] underline-offset-2 hover:underline"
-                >
-                  Open reconciliation
-                </Link>
-              </CardContent>
-            </Card>
-          </div>
-
           <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
             <div>
               <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
@@ -362,7 +329,7 @@ export function BarberOperationsDashboard() {
               </div>
             ) : (
               <>
-                <ul className="space-y-2">
+                <ul className="overflow-hidden rounded-[var(--radius-lg)] border border-[var(--border)]/90 bg-[var(--card)]">
                   {feed.map((t) => (
                     <LedgerRow key={t.id} t={t} />
                   ))}

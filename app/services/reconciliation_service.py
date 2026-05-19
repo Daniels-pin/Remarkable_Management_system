@@ -14,7 +14,6 @@ from app.models.barber_daily_summary import BarberDailySummary
 from app.models.enums import (
     AppNotificationType,
     BarberDailySummaryStatus,
-    LedgerEntryType,
     LedgerReconciliationStatus,
     ReconciliationTimelineEventType,
     RecordLifecycleState,
@@ -23,7 +22,7 @@ from app.models.enums import (
 from app.models.ledger import LedgerEntry
 from app.models.reconciliation_timeline import ReconciliationTimelineEvent
 from app.models.user import User
-from app.services import audit_service, notification_service
+from app.services import audit_service, ledger_service, notification_service
 from app.services.financial_month_util import require_grace_or_open_month_for_reconciliation
 
 
@@ -46,20 +45,31 @@ def _timeline(
     )
 
 
-def _day_service_entries(
+def _day_employee_entries(
     db: Session, barber_user_id: uuid.UUID, business_day: date
 ) -> list[LedgerEntry]:
-    return (
-        db.query(LedgerEntry)
-        .filter(
-            LedgerEntry.employee_user_id == barber_user_id,
-            LedgerEntry.business_date == business_day,
-            LedgerEntry.entry_type == LedgerEntryType.SERVICE,
-            LedgerEntry.record_lifecycle == RecordLifecycleState.ACTIVE,
-        )
-        .order_by(LedgerEntry.barber_sequence_index.asc())
-        .all()
-    )
+    return ledger_service.day_employee_stream_entries(db, barber_user_id, business_day)
+
+
+def _day_manager_entries(
+    db: Session, barber_user_id: uuid.UUID, business_day: date
+) -> list[LedgerEntry]:
+    return ledger_service.day_manager_stream_entries(db, barber_user_id, business_day)
+
+
+def _apply_status_to_day_streams(
+    db: Session,
+    *,
+    barber_user_id: uuid.UUID,
+    business_day: date,
+    status: LedgerReconciliationStatus,
+) -> None:
+    for row in (
+        *_day_employee_entries(db, barber_user_id, business_day),
+        *_day_manager_entries(db, barber_user_id, business_day),
+    ):
+        row.reconciliation_status = status
+        db.add(row)
 
 
 def get_or_create_daily_summary(
@@ -125,7 +135,8 @@ def manager_propose_daily_summary(
     summary = get_or_create_daily_summary(
         db, barber_user_id=barber_user_id, business_day=business_day, actor=manager
     )
-    entries = _day_service_entries(db, barber_user_id, business_day)
+    employee_entries = _day_employee_entries(db, barber_user_id, business_day)
+    manager_entries = _day_manager_entries(db, barber_user_id, business_day)
 
     if summary.status == BarberDailySummaryStatus.AWAITING_BARBER_REVIEW:
         raise ConflictError(
@@ -144,10 +155,9 @@ def manager_propose_daily_summary(
             code="SUMMARY_USE_REVISION",
         )
 
-    if not entries and not mark_missing_barber_submission:
+    if not employee_entries and not manager_entries and not mark_missing_barber_submission:
         raise ValidationAppError(
-            "No barber entries for this day. Confirm missing barber submission "
-            "to record officially.",
+            "No entries for this day. Confirm missing barber submission to record officially.",
             code="SUMMARY_EMPTY",
         )
 
@@ -155,19 +165,41 @@ def manager_propose_daily_summary(
     total_orig = Decimal("0")
     total_mgr = Decimal("0")
 
-    for e in entries:
-        orig = e.original_barber_amount or e.amount
+    for e in employee_entries:
+        orig = e.amount
         total_orig += orig
-        mgr = amounts_map.get(e.id, e.amount)
+        mgr = amounts_map.get(e.id, orig)
         if mgr < 0:
             raise ValidationAppError("Manager amounts cannot be negative.", code="INVALID_AMOUNT")
-        e.manager_approved_amount = mgr
-        e.barber_daily_summary_id = summary.id
+        ledger_service.upsert_manager_row_for_employee_index(
+            db,
+            manager=manager,
+            employee_row=e,
+            amount=mgr,
+            summary_id=summary.id,
+        )
         e.reconciliation_status = LedgerReconciliationStatus.AWAITING_BARBER_REVIEW
+        e.barber_daily_summary_id = summary.id
         total_mgr += mgr
         db.add(e)
 
-    barber_submitted_any = any(not e.is_manager_created_without_barber for e in entries)
+    for m in manager_entries:
+        if m.id not in amounts_map:
+            total_mgr += m.amount
+            m.reconciliation_status = LedgerReconciliationStatus.AWAITING_BARBER_REVIEW
+            m.barber_daily_summary_id = summary.id
+            db.add(m)
+            continue
+        mgr = amounts_map[m.id]
+        if mgr < 0:
+            raise ValidationAppError("Manager amounts cannot be negative.", code="INVALID_AMOUNT")
+        m.amount = mgr
+        m.reconciliation_status = LedgerReconciliationStatus.AWAITING_BARBER_REVIEW
+        m.barber_daily_summary_id = summary.id
+        total_mgr += mgr
+        db.add(m)
+
+    barber_submitted_any = len(employee_entries) > 0
     summary.used_manager_entries_due_to_missing_barber = bool(
         mark_missing_barber_submission and not barber_submitted_any
     )
@@ -238,19 +270,32 @@ def manager_revise_after_dispute(
             code="MANAGER_REVISION_EXHAUSTED",
         )
 
-    entries = _day_service_entries(db, barber_user_id, business_day)
     amounts_map = entry_amounts or {}
     total_orig = Decimal("0")
     total_mgr = Decimal("0")
-    for e in entries:
-        orig = e.original_barber_amount or e.amount
+
+    for e in _day_employee_entries(db, barber_user_id, business_day):
+        orig = e.amount
         total_orig += orig
-        mgr = amounts_map.get(e.id, e.manager_approved_amount or e.amount)
-        e.manager_approved_amount = mgr
-        e.barber_daily_summary_id = summary.id
+        mgr = amounts_map.get(e.id, e.amount)
+        ledger_service.upsert_manager_row_for_employee_index(
+            db,
+            manager=manager,
+            employee_row=e,
+            amount=mgr,
+            summary_id=summary.id,
+        )
         e.reconciliation_status = LedgerReconciliationStatus.AWAITING_BARBER_REVIEW
-        total_mgr += mgr
         db.add(e)
+        total_mgr += mgr
+
+    for m in _day_manager_entries(db, barber_user_id, business_day):
+        mgr = amounts_map.get(m.id, m.amount)
+        m.amount = mgr
+        m.reconciliation_status = LedgerReconciliationStatus.AWAITING_BARBER_REVIEW
+        m.barber_daily_summary_id = summary.id
+        total_mgr += mgr
+        db.add(m)
 
     summary.total_original_barber = total_orig
     summary.total_manager_approved = total_mgr
@@ -312,10 +357,12 @@ def barber_accept_summary(
         raise ConflictError(
             "No reconciliation is awaiting your review.", code="SUMMARY_WRONG_STATE"
         )
-    entries = _day_service_entries(db, barber.id, business_day)
-    for e in entries:
-        e.reconciliation_status = LedgerReconciliationStatus.SETTLED
-        db.add(e)
+    _apply_status_to_day_streams(
+        db,
+        barber_user_id=barber.id,
+        business_day=business_day,
+        status=LedgerReconciliationStatus.SETTLED,
+    )
     summary.status = BarberDailySummaryStatus.SETTLED
     summary.settled_at = datetime.now(UTC)
     summary.settled_by_user_id = barber.id
@@ -371,9 +418,12 @@ def barber_reject_summary(
     if summary.manager_proposal_version >= 2:
         summary.status = BarberDailySummaryStatus.ADMIN_PENDING
         summary.barber_rejection_reason = reason.strip()
-        for e in _day_service_entries(db, barber.id, business_day):
-            e.reconciliation_status = LedgerReconciliationStatus.DISPUTED
-            db.add(e)
+        _apply_status_to_day_streams(
+            db,
+            barber_user_id=barber.id,
+            business_day=business_day,
+            status=LedgerReconciliationStatus.DISPUTED,
+        )
         db.add(summary)
         _timeline(
             db,
@@ -398,9 +448,12 @@ def barber_reject_summary(
     else:
         summary.status = BarberDailySummaryStatus.DISPUTED
         summary.barber_rejection_reason = reason.strip()
-        for e in _day_service_entries(db, barber.id, business_day):
-            e.reconciliation_status = LedgerReconciliationStatus.DISPUTED
-            db.add(e)
+        _apply_status_to_day_streams(
+            db,
+            barber_user_id=barber.id,
+            business_day=business_day,
+            status=LedgerReconciliationStatus.DISPUTED,
+        )
         db.add(summary)
         _timeline(
             db,
@@ -456,21 +509,30 @@ def admin_resolve_daily_dispute(
     if final_day_total < 0:
         raise ValidationAppError("Final amount cannot be negative.", code="INVALID_AMOUNT")
 
-    entries = _day_service_entries(db, summary.barber_user_id, summary.business_date)
-    current = sum((e.manager_approved_amount or e.amount) for e in entries) or Decimal("0")
+    manager_entries = _day_manager_entries(
+        db, summary.barber_user_id, summary.business_date
+    )
+    current = sum(e.amount for e in manager_entries) or Decimal("0")
 
-    if entries and current == 0:
-        share = (final_day_total / Decimal(len(entries))).quantize(Decimal("0.01"))
-        for e in entries:
-            e.manager_approved_amount = share
+    if manager_entries and current == 0:
+        share = (final_day_total / Decimal(len(manager_entries))).quantize(Decimal("0.01"))
+        for e in manager_entries:
+            e.amount = share
             e.reconciliation_status = LedgerReconciliationStatus.SETTLED
             db.add(e)
-    elif entries:
-        for e in entries:
-            weight = (e.manager_approved_amount or e.amount) / current
-            e.manager_approved_amount = (final_day_total * weight).quantize(Decimal("0.01"))
+    elif manager_entries:
+        for e in manager_entries:
+            weight = e.amount / current
+            e.amount = (final_day_total * weight).quantize(Decimal("0.01"))
             e.reconciliation_status = LedgerReconciliationStatus.SETTLED
             db.add(e)
+
+    _apply_status_to_day_streams(
+        db,
+        barber_user_id=summary.barber_user_id,
+        business_day=summary.business_date,
+        status=LedgerReconciliationStatus.SETTLED,
+    )
 
     summary.admin_final_day_total = final_day_total
     summary.admin_resolution_note = note.strip()

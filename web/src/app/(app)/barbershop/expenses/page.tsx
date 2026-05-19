@@ -9,7 +9,7 @@ import { BarbershopShell } from "@/components/layout/barbershop-shell";
 import { Card } from "@/components/ui/card";
 import { useAuth } from "@/components/providers/auth-provider";
 import { ApiError, getOperationsSummary, listBarbershopLedger, type LedgerRow } from "@/lib/api";
-import { isPayrollExpenseCategory } from "@/lib/expense-category";
+import { isManagerOperationalExpenseCategory } from "@/lib/expense-category";
 import { formatExpensePaymentSource } from "@/lib/expense-payment";
 import { isManager } from "@/lib/roles";
 import { formatNaira, formatTimeLabel } from "@/lib/format";
@@ -22,6 +22,7 @@ export default function ExpensesPage() {
   const [loading, setLoading] = React.useState(true);
   const [sources, setSources] = React.useState(EMPTY_FINANCIAL_SNAPSHOT.expenseSources);
   const [payrollCommission, setPayrollCommission] = React.useState(0);
+  const [rentExpenses, setRentExpenses] = React.useState(0);
   const [rows, setRows] = React.useState<LedgerRow[]>([]);
 
   const load = React.useCallback(async () => {
@@ -34,12 +35,14 @@ export default function ExpensesPage() {
       const mapped = mapOperationsSummary(summary);
       setSources(mapped.expenseSources);
       setPayrollCommission(mapped.payrollCommission);
+      setRentExpenses(mapped.rentExpenses);
       setRows(
         ledger.items
           .filter((r) => r.entry_type === "expense")
           .filter(
             (r) =>
-              !managerView || !isPayrollExpenseCategory(r.expense_category?.name ?? null),
+              !managerView ||
+              isManagerOperationalExpenseCategory(r.expense_category?.name ?? null),
           )
           .sort((a, b) => new Date(b.occurred_at).getTime() - new Date(a.occurred_at).getTime()),
       );
@@ -48,6 +51,7 @@ export default function ExpensesPage() {
       else toast.error("Could not load expenses.");
       setSources(EMPTY_FINANCIAL_SNAPSHOT.expenseSources);
       setPayrollCommission(0);
+      setRentExpenses(0);
       setRows([]);
     } finally {
       setLoading(false);
@@ -63,8 +67,8 @@ export default function ExpensesPage() {
       title="Expenses"
       subtitle={
         managerView
-          ? "Operational shop spend — payroll and payouts are admin-only."
-          : "Operational and payroll spend with funding-source visibility."
+          ? "Daily operational shop spend — rent, payroll, and payouts are admin-only."
+          : "Operational, rent, payroll, and funding-source visibility."
       }
     >
       <div className="space-y-8">
@@ -78,6 +82,7 @@ export default function ExpensesPage() {
               sources={sources}
               variant={managerView ? "manager" : "admin"}
               payrollCommission={payrollCommission}
+              rentExpenses={rentExpenses}
             />
 
             <div>

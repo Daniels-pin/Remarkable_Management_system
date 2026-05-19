@@ -13,6 +13,7 @@ export function mapOperationsSummary(raw: OperationsSummaryResponse): FinancialS
     productSalesRevenue: num(raw.product_sales_revenue),
     totalExpenses: num(raw.total_expenses),
     operationalExpenses: num(raw.operational_expenses),
+    rentExpenses: num(raw.rent_expenses ?? "0"),
     payrollCommission: num(raw.payroll_commission),
     netProfit: num(raw.net_profit),
     expenseSources: {

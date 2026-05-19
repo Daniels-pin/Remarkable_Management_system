@@ -18,6 +18,7 @@ export const EMPTY_FINANCIAL_SNAPSHOT: FinancialSnapshot = {
   productSalesRevenue: 0,
   totalExpenses: 0,
   operationalExpenses: 0,
+  rentExpenses: 0,
   payrollCommission: 0,
   netProfit: 0,
   expenseSources: {
@@ -47,6 +48,7 @@ export function scaleFinancials(
     productSalesRevenue: round(base.productSalesRevenue),
     totalExpenses: round(base.totalExpenses),
     operationalExpenses: round(base.operationalExpenses),
+    rentExpenses: round(base.rentExpenses),
     payrollCommission: round(base.payrollCommission),
     netProfit: round(base.netProfit),
     expenseSources: {

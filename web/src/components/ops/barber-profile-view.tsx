@@ -43,22 +43,53 @@ function FinanceSummaryCard({
   payoutLabel = "Payout",
 }: {
   title: string;
-  stats: { revenue: number; services: number; payout: number };
+  stats: {
+    revenue: number;
+    services: number;
+    payout: number;
+    approved?: number;
+    pending?: number;
+  };
   payoutLabel?: string;
 }) {
+  const metricCount =
+    2 +
+    (stats.approved != null ? 1 : 0) +
+    (stats.pending != null ? 1 : 0) +
+    1;
+  const cols =
+    metricCount >= 5
+      ? "sm:grid-cols-2 lg:grid-cols-5"
+      : metricCount >= 4
+        ? "sm:grid-cols-2 lg:grid-cols-4"
+        : "sm:grid-cols-3";
   return (
     <Card>
       <CardContent className="p-5 pt-5">
         <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
           {title}
         </p>
-        <div className="mt-5 grid grid-cols-1 gap-5 sm:grid-cols-3 sm:gap-4">
+        <div className={cn("mt-5 grid grid-cols-1 gap-5 sm:gap-4", cols)}>
           <FinanceStat label="Revenue" value={formatNaira(stats.revenue)} />
           <FinanceStat
             label="Services"
             value={formatServicesCount(stats.services)}
             valueClassName="text-[var(--foreground)]"
           />
+          {stats.approved != null ? (
+            <FinanceStat
+              label="Approved"
+              value={formatNaira(stats.approved)}
+              valueClassName="text-emerald-800 dark:text-emerald-200"
+            />
+          ) : null}
+          {stats.pending != null ? (
+            <FinanceStat
+              label="Pending"
+              value={formatNaira(stats.pending)}
+              valueClassName="text-amber-900 dark:text-amber-100"
+            />
+          ) : null}
           <FinanceStat
             label={payoutLabel}
             value={formatNaira(stats.payout)}

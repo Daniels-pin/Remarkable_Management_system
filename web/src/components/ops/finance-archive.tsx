@@ -38,7 +38,8 @@ import { toast } from "sonner";
 export function FinanceArchive() {
   const { session } = useAuth();
   const isAdmin = session?.role === "admin";
-  const canCloseMonth = session?.role === "admin" || session?.role === "manager";
+  const isManager = session?.role === "manager";
+  const canCloseMonth = isAdmin || isManager;
 
   const [open, setOpen] = React.useState(false);
   const [active, setActive] = React.useState<FinancialMonthRow | null>(null);
@@ -58,9 +59,14 @@ export function FinanceArchive() {
   const load = React.useCallback(async () => {
     setLoading(true);
     try {
-      const [m, s] = await Promise.all([listFinancialMonths(), listCommissionStatements()]);
+      const m = await listFinancialMonths();
       setMonths(m.items);
-      setStatements(s.items);
+      if (isAdmin) {
+        const s = await listCommissionStatements();
+        setStatements(s.items);
+      } else {
+        setStatements([]);
+      }
     } catch (e) {
       if (e instanceof ApiError) toast.error(e.message);
       else toast.error("Could not load finance.");
@@ -69,7 +75,7 @@ export function FinanceArchive() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [isAdmin]);
 
   React.useEffect(() => {
     queueMicrotask(() => void load());
@@ -163,8 +169,26 @@ export function FinanceArchive() {
   };
 
   const expensesFor = (m: FinancialMonthRow) => {
+    if (isManager) {
+      if (m.operational_expenses != null) return Number(m.operational_expenses) || 0;
+      if (m.expense_sources?.operational_total != null) {
+        return Number(m.expense_sources.operational_total) || 0;
+      }
+    }
     if (m.total_expenses != null) return Number(m.total_expenses) || 0;
     if (m.expense_sources?.total) return Number(m.expense_sources.total) || 0;
+    return null;
+  };
+
+  const servicesRevenueFor = (m: FinancialMonthRow) => {
+    const snap = m.snapshot as { services_revenue?: string } | undefined;
+    if (snap?.services_revenue) return Number(snap.services_revenue) || 0;
+    return null;
+  };
+
+  const productRevenueFor = (m: FinancialMonthRow) => {
+    const snap = m.snapshot as { product_sales_revenue?: string } | undefined;
+    if (snap?.product_sales_revenue) return Number(snap.product_sales_revenue) || 0;
     return null;
   };
 
@@ -228,8 +252,9 @@ export function FinanceArchive() {
           Financial archive
         </h2>
         <p className="max-w-2xl text-sm leading-relaxed text-[var(--muted-foreground)]">
-          Month-by-month posture with automatic open → grace → locked transitions. Select a
-          period for revenue, expenses, payouts, and reconciliation posture.
+          {isAdmin
+            ? "Month-by-month posture with revenue, full expenses, payroll, and payout controls."
+            : "Month-by-month shop revenue and daily operational expenses. Payroll, rent, and profit are admin-only."}
         </p>
       </header>
 
@@ -299,23 +324,27 @@ export function FinanceArchive() {
                     </span>
                   </div>
                   <div className="flex justify-between gap-2">
-                    <span className="text-[var(--muted-foreground)]">Expenses</span>
+                    <span className="text-[var(--muted-foreground)]">
+                      {isManager ? "Operational" : "Expenses"}
+                    </span>
                     <span className="tabular-nums text-[var(--foreground)]">
                       {expenses != null ? formatNaira(expenses) : "—"}
                     </span>
                   </div>
-                  <div className="flex justify-between gap-2 pt-1">
-                    <span className="text-[var(--muted-foreground)]">Payout</span>
-                    <span className="text-[var(--foreground)]">
-                      {statements.some((s) => s.financial_month_id === m.id)
-                        ? statements
-                            .filter((s) => s.financial_month_id === m.id)
-                            .some((s) => s.payout_state !== "paid")
-                          ? "Unpaid items"
-                          : "Paid out"
-                        : "—"}
-                    </span>
-                  </div>
+                  {isAdmin ? (
+                    <div className="flex justify-between gap-2 pt-1">
+                      <span className="text-[var(--muted-foreground)]">Payout</span>
+                      <span className="text-[var(--foreground)]">
+                        {statements.some((s) => s.financial_month_id === m.id)
+                          ? statements
+                              .filter((s) => s.financial_month_id === m.id)
+                              .some((s) => s.payout_state !== "paid")
+                            ? "Unpaid items"
+                            : "Paid out"
+                          : "—"}
+                      </span>
+                    </div>
+                  ) : null}
                 </div>
               </button>
             );
@@ -338,35 +367,83 @@ export function FinanceArchive() {
                   <p className="text-xs text-[var(--muted-foreground)]">{periodSubline}</p>
                 </div>
 
-                <div className="grid gap-3 sm:grid-cols-3">
+                <div
+                  className={cn(
+                    "grid gap-3",
+                    isAdmin ? "sm:grid-cols-3" : "sm:grid-cols-2 lg:grid-cols-4",
+                  )}
+                >
                   <Card>
                     <CardContent className="space-y-1 p-4 pt-4">
                       <p className="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">
-                        Revenue
+                        Total revenue
                       </p>
                       <p className="text-lg font-semibold tabular-nums">
                         {revenueFor(active) != null ? formatNaira(revenueFor(active)!) : "—"}
                       </p>
                     </CardContent>
                   </Card>
-                  <Card>
-                    <CardContent className="space-y-1 p-4 pt-4">
-                      <p className="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">
-                        Commission total
-                      </p>
-                      <p className="text-lg font-semibold tabular-nums">{formatNaira(totalCommission)}</p>
-                    </CardContent>
-                  </Card>
-                  <Card>
-                    <CardContent className="space-y-1 p-4 pt-4">
-                      <p className="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">
-                        Unpaid items
-                      </p>
-                      <p className="text-lg font-semibold tabular-nums text-amber-800 dark:text-amber-200">
-                        {unpaidCount}
-                      </p>
-                    </CardContent>
-                  </Card>
+                  {isAdmin ? (
+                    <>
+                      <Card>
+                        <CardContent className="space-y-1 p-4 pt-4">
+                          <p className="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">
+                            Commission total
+                          </p>
+                          <p className="text-lg font-semibold tabular-nums">
+                            {formatNaira(totalCommission)}
+                          </p>
+                        </CardContent>
+                      </Card>
+                      <Card>
+                        <CardContent className="space-y-1 p-4 pt-4">
+                          <p className="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">
+                            Unpaid items
+                          </p>
+                          <p className="text-lg font-semibold tabular-nums text-amber-800 dark:text-amber-200">
+                            {unpaidCount}
+                          </p>
+                        </CardContent>
+                      </Card>
+                    </>
+                  ) : (
+                    <>
+                      <Card>
+                        <CardContent className="space-y-1 p-4 pt-4">
+                          <p className="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">
+                            Services
+                          </p>
+                          <p className="text-lg font-semibold tabular-nums">
+                            {servicesRevenueFor(active) != null
+                              ? formatNaira(servicesRevenueFor(active)!)
+                              : "—"}
+                          </p>
+                        </CardContent>
+                      </Card>
+                      <Card>
+                        <CardContent className="space-y-1 p-4 pt-4">
+                          <p className="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">
+                            Product sales
+                          </p>
+                          <p className="text-lg font-semibold tabular-nums">
+                            {productRevenueFor(active) != null
+                              ? formatNaira(productRevenueFor(active)!)
+                              : "—"}
+                          </p>
+                        </CardContent>
+                      </Card>
+                      <Card>
+                        <CardContent className="space-y-1 p-4 pt-4">
+                          <p className="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">
+                            Operational expenses
+                          </p>
+                          <p className="text-lg font-semibold tabular-nums">
+                            {expensesFor(active) != null ? formatNaira(expensesFor(active)!) : "—"}
+                          </p>
+                        </CardContent>
+                      </Card>
+                    </>
+                  )}
                 </div>
 
                 <p className="text-sm text-[var(--muted-foreground)]">
@@ -374,8 +451,13 @@ export function FinanceArchive() {
                   <span className="font-medium text-[var(--foreground)]">
                     {financialMonthStatusLabel(active.state)}
                   </span>
-                  {" · "}
-                  Payout: <span className={cn("font-medium", payoutState.tone)}>{payoutState.label}</span>
+                  {isAdmin ? (
+                    <>
+                      {" · "}
+                      Payout:{" "}
+                      <span className={cn("font-medium", payoutState.tone)}>{payoutState.label}</span>
+                    </>
+                  ) : null}
                 </p>
 
                 {canCloseMonth &&
@@ -394,10 +476,15 @@ export function FinanceArchive() {
 
                 <ExpenseSourceBreakdownCard
                   sources={activeExpenseSources}
-                  variant="admin"
+                  variant={isAdmin ? "admin" : "manager"}
+                  payrollCommission={
+                    isAdmin ? Number(active.payroll_commission ?? 0) : 0
+                  }
+                  rentExpenses={isAdmin ? Number(active.rent_expenses ?? 0) : 0}
                   compact
                 />
 
+                {isAdmin ? (
                 <div className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--card)]">
                   <div className="flex items-center justify-between gap-3 border-b border-[var(--border)] px-4 py-3">
                     <p className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
@@ -446,6 +533,7 @@ export function FinanceArchive() {
                     </ul>
                   )}
                 </div>
+                ) : null}
               </div>
             ) : null}
           </DialogBody>

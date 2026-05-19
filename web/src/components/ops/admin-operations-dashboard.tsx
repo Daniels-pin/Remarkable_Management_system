@@ -219,7 +219,7 @@ export function AdminOperationsDashboard() {
             hint={
               noFinancialActivity
                 ? "Profit appears once revenue and expenses are posted."
-                : undefined
+                : "Revenue minus operational expenses and team payout obligations."
             }
           />
         </div>
@@ -233,7 +233,7 @@ export function AdminOperationsDashboard() {
           <SummaryMetricCard
             label="Shop expenses"
             value={formatNaira(current.operationalExpenses)}
-            hint="Fuel, rent, supplies, and other operational costs"
+            hint="Fuel, supplies, utilities — daily operational costs"
           />
           <SummaryMetricCard
             label="Salary & commission"
@@ -243,7 +243,7 @@ export function AdminOperationsDashboard() {
           <SummaryMetricCard
             label="All-time net (reference)"
             value={formatNaira(allTime.netProfit)}
-            hint="Owner-level roll-up across all posted history."
+            hint="Lifetime net from first posted service, sale, or expense."
             tone="muted"
           />
         </div>
@@ -254,6 +254,7 @@ export function AdminOperationsDashboard() {
           sources={current.expenseSources}
           variant="admin"
           payrollCommission={current.payrollCommission}
+          rentExpenses={current.rentExpenses}
           className="lg:col-span-1"
         />
         <Card className="border-[var(--border)]/90 lg:col-span-2">
@@ -274,7 +275,7 @@ export function AdminOperationsDashboard() {
                 </span>
                 {noFinancialActivity ? (
                   <span className="mt-1 block text-xs">
-                    Totals stay at zero until archived months carry real aggregates.
+                    All-time totals stay at zero until the first ledger entry is posted.
                   </span>
                 ) : null}
               </p>

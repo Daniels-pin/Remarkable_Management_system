@@ -11,6 +11,7 @@ type ExpenseSourceBreakdownProps = {
   /** Admin sees total + operational vs payroll split; manager sees operational only. */
   variant?: "admin" | "manager";
   payrollCommission?: number;
+  rentExpenses?: number;
 };
 
 export function ExpenseSourceBreakdownCard({
@@ -19,6 +20,7 @@ export function ExpenseSourceBreakdownCard({
   compact = false,
   variant = "manager",
   payrollCommission = 0,
+  rentExpenses = 0,
 }: ExpenseSourceBreakdownProps) {
   const isAdmin = variant === "admin";
   const operationalTotal = sources.operationalTotal || sources.total;
@@ -56,11 +58,22 @@ export function ExpenseSourceBreakdownCard({
               <span>
                 <span className="text-sm font-medium text-[var(--foreground)]">Shop expenses</span>
                 <span className="mt-0.5 block text-xs text-[var(--muted-foreground)]">
-                  Fuel, rent, supplies, and other operational spend
+                  Fuel, supplies, utilities, and daily shop spend
                 </span>
               </span>
               <span className="text-sm font-semibold tabular-nums text-[var(--foreground)]">
                 {formatNaira(operationalTotal)}
+              </span>
+            </div>
+            <div className="flex items-baseline justify-between gap-4 border-b border-[var(--border)]/80 pb-3">
+              <span>
+                <span className="text-sm font-medium text-[var(--foreground)]">Rent</span>
+                <span className="mt-0.5 block text-xs text-[var(--muted-foreground)]">
+                  Lease and property obligations
+                </span>
+              </span>
+              <span className="text-sm font-semibold tabular-nums text-[var(--foreground)]">
+                {formatNaira(rentExpenses)}
               </span>
             </div>
             <div className="flex items-baseline justify-between gap-4 border-b border-[var(--border)]/80 pb-3">

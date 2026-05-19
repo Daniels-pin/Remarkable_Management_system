@@ -1,13 +1,14 @@
-"""Ledger orchestration: barber services, soft delete, audit hooks."""
+"""Ledger orchestration: dual-stream indexed reconciliation."""
 
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import extract, func
+from sqlalchemy import extract, func, or_
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import ConflictError, ForbiddenError, NotFoundError, ValidationAppError
@@ -15,30 +16,569 @@ from app.models.barber_sequence_counter import BarberSequenceCounter
 from app.models.enums import (
     LedgerEntryType,
     LedgerReconciliationStatus,
+    LedgerRecordStream,
     RecordLifecycleState,
     UserRole,
 )
+from app.models.catalog import ServiceType
+from app.models.financial_month import FinancialMonth
 from app.models.ledger import LedgerEntry
 from app.models.user import User
 from app.services import audit_service, catalog_service
 from app.services.business_time import barber_may_edit_entry, business_date_for_instant
 from app.services.financial_month_util import (
-    assert_month_allows_write,
     require_financial_month_for_new_entry,
     require_writable_month_for_entry,
 )
 
 
-def allocate_next_barber_index(db: Session, barber_user_id: uuid.UUID) -> int:
-    counter = db.get(BarberSequenceCounter, barber_user_id)
+@dataclass(frozen=True)
+class ReconciliationSlot:
+    """Paired employee/manager records at the same index position."""
+
+    index: int
+    employee: LedgerEntry | None
+    manager: LedgerEntry | None
+
+
+def _service_base_filter(db: Session, *, barber_user_id: uuid.UUID):
+    return db.query(LedgerEntry).filter(
+        LedgerEntry.employee_user_id == barber_user_id,
+        LedgerEntry.entry_type == LedgerEntryType.SERVICE,
+        LedgerEntry.record_lifecycle == RecordLifecycleState.ACTIVE,
+    )
+
+
+def _stream_filter(q, stream: LedgerRecordStream):
+    return q.filter(LedgerEntry.record_stream == stream)
+
+
+def allocate_next_sequence_index(
+    db: Session,
+    *,
+    barber_user_id: uuid.UUID,
+    financial_month_id: uuid.UUID,
+    stream: LedgerRecordStream,
+) -> int:
+    """Allocate the next index for an employee+month+stream (resets each month)."""
+    counter = db.get(
+        BarberSequenceCounter,
+        (barber_user_id, financial_month_id, stream),
+    )
     if counter is None:
-        counter = BarberSequenceCounter(barber_user_id=barber_user_id, next_index=1)
+        counter = BarberSequenceCounter(
+            barber_user_id=barber_user_id,
+            financial_month_id=financial_month_id,
+            record_stream=stream,
+            next_index=1,
+        )
         db.add(counter)
         db.flush()
     idx = counter.next_index
     counter.next_index = idx + 1
     db.add(counter)
     return idx
+
+
+def is_official_manager_service_row(row: LedgerEntry) -> bool:
+    """True when a service line belongs on the manager/admin operational ledger."""
+    return (
+        row.entry_type == LedgerEntryType.SERVICE
+        and row.record_stream == LedgerRecordStream.MANAGER
+    )
+
+
+def official_service_amount(row: LedgerEntry) -> Decimal:
+    return row.amount
+
+
+def _stream_amount(row: LedgerEntry | None) -> Decimal | None:
+    if row is None:
+        return None
+    return row.amount
+
+
+def _pair_reconciliation_status(
+    employee: LedgerEntry | None,
+    manager: LedgerEntry | None,
+) -> str:
+    """Compare employee vs manager streams by index (presence + amount only)."""
+    if employee is None and manager is None:
+        return "waiting_for_reconciliation"
+
+    if employee is None:
+        return "missing_employee_entry"
+
+    if manager is None:
+        return "missing_manager_entry"
+
+    emp_amt = _stream_amount(employee)
+    mgr_amt = _stream_amount(manager)
+    if emp_amt is not None and mgr_amt is not None and emp_amt != mgr_amt:
+        return "mismatch"
+
+    return "matched"
+
+
+def find_employee_row_at_index(
+    db: Session,
+    *,
+    barber_user_id: uuid.UUID,
+    financial_month_id: uuid.UUID,
+    index: int,
+) -> LedgerEntry | None:
+    return (
+        _stream_filter(_service_base_filter(db, barber_user_id=barber_user_id), LedgerRecordStream.EMPLOYEE)
+        .filter(
+            LedgerEntry.financial_month_id == financial_month_id,
+            LedgerEntry.barber_sequence_index == index,
+        )
+        .one_or_none()
+    )
+
+
+def paired_rows_for_service(
+    db: Session,
+    row: LedgerEntry,
+) -> tuple[LedgerEntry | None, LedgerEntry | None]:
+    """Resolve employee/manager streams for the same barber, month, and index."""
+    if (
+        row.entry_type != LedgerEntryType.SERVICE
+        or row.employee_user_id is None
+        or row.financial_month_id is None
+        or row.barber_sequence_index is None
+    ):
+        return None, None
+
+    barber_id = row.employee_user_id
+    fm_id = row.financial_month_id
+    index = row.barber_sequence_index
+
+    if row.record_stream == LedgerRecordStream.EMPLOYEE:
+        employee = row
+        manager = find_manager_row_at_index(
+            db,
+            barber_user_id=barber_id,
+            financial_month_id=fm_id,
+            index=index,
+        )
+    elif row.record_stream == LedgerRecordStream.MANAGER:
+        manager = row
+        employee = find_employee_row_at_index(
+            db,
+            barber_user_id=barber_id,
+            financial_month_id=fm_id,
+            index=index,
+        )
+    else:
+        return None, None
+    return employee, manager
+
+
+def comparison_status_for_service_row(db: Session, row: LedgerEntry) -> str | None:
+    """
+    Central reconciliation comparison for a single service ledger row.
+
+    Pairs by employee_user_id + financial_month_id + barber_sequence_index (not timestamps).
+    """
+    if row.entry_type != LedgerEntryType.SERVICE:
+        return None
+    employee, manager = paired_rows_for_service(db, row)
+    if employee is None and manager is None:
+        return "waiting_for_reconciliation"
+    return _pair_reconciliation_status(employee, manager)
+
+
+def comparison_status_map_for_rows(db: Session, rows: list[LedgerEntry]) -> dict[uuid.UUID, str]:
+    """Batch comparison_status for many service rows (avoids N+1 on ledger lists)."""
+    service_rows = [
+        r
+        for r in rows
+        if r.entry_type == LedgerEntryType.SERVICE
+        and r.employee_user_id is not None
+        and r.financial_month_id is not None
+        and r.barber_sequence_index is not None
+    ]
+    if not service_rows:
+        return {}
+
+    indexes_by_scope: dict[tuple[uuid.UUID, uuid.UUID], set[int]] = {}
+    for r in service_rows:
+        scope = (r.employee_user_id, r.financial_month_id)
+        indexes_by_scope.setdefault(scope, set()).add(r.barber_sequence_index)
+
+    employee_by_slot: dict[tuple[uuid.UUID, uuid.UUID, int], LedgerEntry] = {}
+    manager_by_slot: dict[tuple[uuid.UUID, uuid.UUID, int], LedgerEntry] = {}
+
+    for (barber_id, fm_id), indexes in indexes_by_scope.items():
+        idx_list = list(indexes)
+        for r in (
+            _stream_filter(_service_base_filter(db, barber_user_id=barber_id), LedgerRecordStream.EMPLOYEE)
+            .filter(
+                LedgerEntry.financial_month_id == fm_id,
+                LedgerEntry.barber_sequence_index.in_(idx_list),
+            )
+            .all()
+        ):
+            employee_by_slot[(barber_id, fm_id, r.barber_sequence_index)] = r
+        for r in (
+            _stream_filter(_service_base_filter(db, barber_user_id=barber_id), LedgerRecordStream.MANAGER)
+            .filter(
+                LedgerEntry.financial_month_id == fm_id,
+                LedgerEntry.barber_sequence_index.in_(idx_list),
+            )
+            .all()
+        ):
+            manager_by_slot[(barber_id, fm_id, r.barber_sequence_index)] = r
+
+    out: dict[uuid.UUID, str] = {}
+    for r in service_rows:
+        slot_key = (r.employee_user_id, r.financial_month_id, r.barber_sequence_index)
+        employee = employee_by_slot.get(slot_key)
+        manager = manager_by_slot.get(slot_key)
+        out[r.id] = _pair_reconciliation_status(employee, manager)
+    return out
+
+
+def _slot_sort_key(slot: ReconciliationSlot) -> tuple:
+    dates: list[date] = []
+    if slot.employee and slot.employee.business_date:
+        dates.append(slot.employee.business_date)
+    if slot.manager and slot.manager.business_date:
+        dates.append(slot.manager.business_date)
+    latest = max(dates) if dates else date.min
+    latest_occurred = datetime.min.replace(tzinfo=UTC)
+    for row in (slot.employee, slot.manager):
+        if row is not None and row.occurred_at > latest_occurred:
+            latest_occurred = row.occurred_at
+    return (-latest.toordinal(), slot.index, latest_occurred)
+
+
+def _build_slots_from_rows(
+    employee_rows: list[LedgerEntry],
+    manager_rows: list[LedgerEntry],
+) -> list[ReconciliationSlot]:
+    by_index: dict[int, ReconciliationSlot] = {}
+    for r in employee_rows:
+        if r.barber_sequence_index is None:
+            continue
+        idx = r.barber_sequence_index
+        slot = by_index.get(idx)
+        if slot is None:
+            by_index[idx] = ReconciliationSlot(index=idx, employee=r, manager=None)
+        else:
+            by_index[idx] = ReconciliationSlot(index=idx, employee=r, manager=slot.manager)
+    for r in manager_rows:
+        if r.barber_sequence_index is None:
+            continue
+        idx = r.barber_sequence_index
+        slot = by_index.get(idx)
+        if slot is None:
+            by_index[idx] = ReconciliationSlot(index=idx, employee=None, manager=r)
+        else:
+            by_index[idx] = ReconciliationSlot(index=idx, employee=slot.employee, manager=r)
+    return sorted(by_index.values(), key=_slot_sort_key)
+
+
+def _financial_month_ids_for_calendar(db: Session, *, year: int, month: int) -> list[uuid.UUID]:
+    rows = (
+        db.query(FinancialMonth.id)
+        .filter(FinancialMonth.year == year, FinancialMonth.month == month)
+        .all()
+    )
+    return [row[0] for row in rows]
+
+
+def _slots_for_calendar_month(
+    db: Session,
+    *,
+    barber_user_id: uuid.UUID,
+    year: int,
+    month: int,
+) -> list[ReconciliationSlot]:
+    """
+    Reconciliation slots for a calendar month.
+
+    Prefer financial_month alignment (authoritative for index pairing); fall back to
+    business_date when financial_month_id is missing on legacy rows.
+    """
+    fm_ids = _financial_month_ids_for_calendar(db, year=year, month=month)
+    if fm_ids:
+        fm_filter = LedgerEntry.financial_month_id.in_(fm_ids)
+        employee_rows = (
+            _stream_filter(
+                _service_base_filter(db, barber_user_id=barber_user_id),
+                LedgerRecordStream.EMPLOYEE,
+            )
+            .filter(fm_filter)
+            .all()
+        )
+        manager_rows = (
+            _stream_filter(
+                _service_base_filter(db, barber_user_id=barber_user_id),
+                LedgerRecordStream.MANAGER,
+            )
+            .filter(fm_filter)
+            .all()
+        )
+        return _build_slots_from_rows(employee_rows, manager_rows)
+
+    month_filter = (
+        extract("year", LedgerEntry.business_date) == year,
+        extract("month", LedgerEntry.business_date) == month,
+    )
+    employee_rows = (
+        _stream_filter(_service_base_filter(db, barber_user_id=barber_user_id), LedgerRecordStream.EMPLOYEE)
+        .filter(*month_filter)
+        .all()
+    )
+    manager_rows = (
+        _stream_filter(_service_base_filter(db, barber_user_id=barber_user_id), LedgerRecordStream.MANAGER)
+        .filter(*month_filter)
+        .all()
+    )
+    return _build_slots_from_rows(employee_rows, manager_rows)
+
+
+def _slots_for_business_day(
+    db: Session,
+    *,
+    barber_user_id: uuid.UUID,
+    business_day: date,
+) -> list[ReconciliationSlot]:
+    """Day workspace: indexes where either stream has activity on this business day."""
+    employee_day = (
+        _stream_filter(_service_base_filter(db, barber_user_id=barber_user_id), LedgerRecordStream.EMPLOYEE)
+        .filter(LedgerEntry.business_date == business_day)
+        .all()
+    )
+    manager_day = (
+        _stream_filter(_service_base_filter(db, barber_user_id=barber_user_id), LedgerRecordStream.MANAGER)
+        .filter(LedgerEntry.business_date == business_day)
+        .all()
+    )
+    indexes = {
+        r.barber_sequence_index
+        for r in (*employee_day, *manager_day)
+        if r.barber_sequence_index is not None
+    }
+    if not indexes:
+        return []
+
+    employee_rows = (
+        _stream_filter(_service_base_filter(db, barber_user_id=barber_user_id), LedgerRecordStream.EMPLOYEE)
+        .filter(LedgerEntry.barber_sequence_index.in_(indexes))
+        .all()
+    )
+    manager_rows = (
+        _stream_filter(_service_base_filter(db, barber_user_id=barber_user_id), LedgerRecordStream.MANAGER)
+        .filter(LedgerEntry.barber_sequence_index.in_(indexes))
+        .all()
+    )
+    slots = _build_slots_from_rows(employee_rows, manager_rows)
+    return [s for s in slots if s.index in indexes]
+
+
+def find_manager_row_at_index(
+    db: Session,
+    *,
+    barber_user_id: uuid.UUID,
+    financial_month_id: uuid.UUID,
+    index: int,
+) -> LedgerEntry | None:
+    return (
+        _stream_filter(_service_base_filter(db, barber_user_id=barber_user_id), LedgerRecordStream.MANAGER)
+        .filter(
+            LedgerEntry.financial_month_id == financial_month_id,
+            LedgerEntry.barber_sequence_index == index,
+        )
+        .one_or_none()
+    )
+
+
+def build_comparison_payload(
+    slot: ReconciliationSlot,
+    *,
+    service_names: dict[uuid.UUID, str],
+) -> dict[str, Any]:
+    """Side-by-side reconciliation row for API responses."""
+    employee = slot.employee
+    manager = slot.manager
+    comparison = _pair_reconciliation_status(employee, manager)
+
+    def _side(row: LedgerEntry | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        name = service_names.get(row.service_type_id) if row.service_type_id else "Service"
+        return {
+            "id": str(row.id),
+            "amount": str(row.amount),
+            "service_name": name,
+            "service_type_id": str(row.service_type_id) if row.service_type_id else None,
+            "occurred_at": row.occurred_at.isoformat(),
+            "business_date": row.business_date.isoformat() if row.business_date else None,
+            "payment_method": str(row.payment_method) if row.payment_method else None,
+            "note": row.note,
+            "reconciliation_status": str(row.reconciliation_status)
+            if row.reconciliation_status
+            else None,
+        }
+
+    emp_side = _side(employee)
+    mgr_side = _side(manager)
+    primary = employee or manager
+    display_service = (
+        (emp_side or {}).get("service_name")
+        or (mgr_side or {}).get("service_name")
+        or "Service"
+    )
+    display_occurred = primary.occurred_at.isoformat() if primary else None
+    display_date = primary.business_date.isoformat() if primary and primary.business_date else None
+    display_payment = (
+        str(manager.payment_method)
+        if manager and manager.payment_method
+        else str(employee.payment_method)
+        if employee and employee.payment_method
+        else None
+    )
+    display_note = (manager.note if manager and manager.note else None) or (
+        employee.note if employee and employee.note else None
+    )
+
+    employee_amt = emp_side["amount"] if emp_side else None
+    manager_amt = mgr_side["amount"] if mgr_side else None
+    if manager is not None:
+        display_amount = str(manager.amount)
+    elif employee is not None:
+        display_amount = str(employee.amount)
+    else:
+        display_amount = None
+    row_id = f"{slot.index}:{employee.id if employee else ''}:{manager.id if manager else ''}"
+
+    recon_status = None
+    if employee and employee.reconciliation_status:
+        recon_status = str(employee.reconciliation_status)
+    elif manager and manager.reconciliation_status:
+        recon_status = str(manager.reconciliation_status)
+
+    return {
+        "id": row_id,
+        "employee_entry_id": str(employee.id) if employee else None,
+        "manager_entry_id": str(manager.id) if manager else None,
+        "index": slot.index,
+        "barber_sequence_index": slot.index,
+        "index_label": f"#{slot.index:03d}",
+        "service_name": display_service,
+        "employee_amount": employee_amt,
+        "manager_amount": manager_amt,
+        "amount": display_amount,
+        "display_amount": display_amount,
+        "employee": emp_side,
+        "manager": mgr_side,
+        "employee_label": (
+            f"{emp_side['service_name']} — ₦{employee_amt}" if emp_side and employee_amt else None
+        ),
+        "manager_label": (
+            f"{mgr_side['service_name']} — ₦{manager_amt}" if mgr_side and manager_amt else None
+        ),
+        "comparison_status": comparison,
+        "reconciliation_status": recon_status,
+        "business_date": display_date,
+        "occurred_at": display_occurred or datetime.now(UTC).isoformat(),
+        "payment_method": display_payment,
+        "note": display_note,
+        "is_manager_created_without_barber": employee is None and manager is not None,
+    }
+
+
+def list_barber_month_reconciliation(
+    db: Session,
+    *,
+    barber_user_id: uuid.UUID,
+    year: int,
+    month: int,
+    page: int,
+    page_size: int,
+) -> tuple[list[dict[str, Any]], int]:
+    slots = _slots_for_calendar_month(db, barber_user_id=barber_user_id, year=year, month=month)
+    total = len(slots)
+    page_slots = slots[(page - 1) * page_size : page * page_size]
+    type_ids: set[uuid.UUID] = set()
+    for s in page_slots:
+        for row in (s.employee, s.manager):
+            if row and row.service_type_id:
+                type_ids.add(row.service_type_id)
+    names = _service_type_names(db, type_ids)
+    items = [build_comparison_payload(s, service_names=names) for s in page_slots]
+    return items, total
+
+
+def _service_type_names(db: Session, ids: set[uuid.UUID]) -> dict[uuid.UUID, str]:
+    if not ids:
+        return {}
+    return {
+        row.id: row.name
+        for row in db.query(ServiceType).filter(ServiceType.id.in_(ids)).all()
+    }
+
+
+def list_barber_day_reconciliation(
+    db: Session,
+    *,
+    barber_user_id: uuid.UUID,
+    business_day: date,
+    page: int,
+    page_size: int,
+) -> tuple[list[dict[str, Any]], int]:
+    slots = _slots_for_business_day(db, barber_user_id=barber_user_id, business_day=business_day)
+    slots.sort(key=lambda s: (s.index, _slot_sort_key(s)))
+    total = len(slots)
+    page_slots = slots[(page - 1) * page_size : page * page_size]
+    type_ids: set[uuid.UUID] = set()
+    for s in page_slots:
+        for row in (s.employee, s.manager):
+            if row and row.service_type_id:
+                type_ids.add(row.service_type_id)
+    names = _service_type_names(db, type_ids)
+    items = [build_comparison_payload(s, service_names=names) for s in page_slots]
+    return items, total
+
+
+# Backward-compatible aliases used by routers during transition
+def list_barber_month_indexed_entries(
+    db: Session,
+    *,
+    barber_user_id: uuid.UUID,
+    year: int,
+    month: int,
+    page: int,
+    page_size: int,
+) -> tuple[list[dict[str, Any]], int]:
+    return list_barber_month_reconciliation(
+        db,
+        barber_user_id=barber_user_id,
+        year=year,
+        month=month,
+        page=page,
+        page_size=page_size,
+    )
+
+
+def list_barber_day_entries(
+    db: Session,
+    *,
+    barber_user_id: uuid.UUID,
+    business_day: date,
+    page: int,
+    page_size: int,
+) -> tuple[list[dict[str, Any]], int]:
+    return list_barber_day_reconciliation(
+        db,
+        barber_user_id=barber_user_id,
+        business_day=business_day,
+        page=page,
+        page_size=page_size,
+    )
 
 
 def create_manager_official_service_line(
@@ -54,7 +594,7 @@ def create_manager_official_service_line(
     payment_method: Any,
     note: str | None,
 ) -> LedgerEntry:
-    """Manager-only official line when the barber did not submit (flagged on daily summary)."""
+    """Record an independent manager reconciliation index (never mutates employee rows)."""
     if manager.role not in {UserRole.MANAGER, UserRole.ADMIN}:
         raise ForbiddenError("Managers or admins only.", code="FORBIDDEN")
     if amount <= 0:
@@ -64,7 +604,12 @@ def create_manager_official_service_line(
 
     business_date = business_date_for_instant(occurred_at)
     fm = require_financial_month_for_new_entry(db, business_date, manager)
-    idx = allocate_next_barber_index(db, barber_user_id)
+    idx = allocate_next_sequence_index(
+        db,
+        barber_user_id=barber_user_id,
+        financial_month_id=fm.id,
+        stream=LedgerRecordStream.MANAGER,
+    )
 
     row = LedgerEntry(
         financial_month_id=fm.id,
@@ -75,14 +620,15 @@ def create_manager_official_service_line(
         employee_user_id=barber_user_id,
         amount=amount,
         original_barber_amount=None,
-        manager_approved_amount=amount,
+        manager_approved_amount=None,
         barber_sequence_index=idx,
-        reconciliation_status=LedgerReconciliationStatus.MISSING_BARBER_ENTRY,
+        record_stream=LedgerRecordStream.MANAGER,
+        reconciliation_status=LedgerReconciliationStatus.PENDING,
         record_lifecycle=RecordLifecycleState.ACTIVE,
         payment_method=payment_method,
         note=note,
         created_by_user_id=manager.id,
-        is_manager_created_without_barber=True,
+        is_manager_created_without_barber=False,
     )
     db.add(row)
     db.flush()
@@ -90,14 +636,94 @@ def create_manager_official_service_line(
         db,
         actor_user_id=manager.id,
         impersonator_user_id=impersonator_id,
-        action="ledger.manager_official_line_create",
+        action="ledger.manager_stream_create",
         entity_type="ledger_entry",
         entity_id=str(row.id),
-        message=f"Manager official service #{idx:03d} for barber {barber_user_id}",
-        payload={"barber_sequence_index": idx, "barber_user_id": str(barber_user_id)},
+        message=f"Manager reconciliation #{idx:03d} for barber {barber_user_id}",
+        payload={
+            "barber_sequence_index": idx,
+            "barber_user_id": str(barber_user_id),
+            "record_stream": LedgerRecordStream.MANAGER,
+        },
         ip_address=ip_address,
     )
     return row
+
+
+def upsert_manager_row_for_employee_index(
+    db: Session,
+    *,
+    manager: User,
+    employee_row: LedgerEntry,
+    amount: Decimal,
+    summary_id: uuid.UUID | None = None,
+) -> LedgerEntry:
+    """Create or update the manager stream row at the employee's index (batch propose)."""
+    if employee_row.barber_sequence_index is None:
+        raise ValidationAppError("Employee row missing index.", code="LEDGER_DATA_ERROR")
+    existing = find_manager_row_at_index(
+        db,
+        barber_user_id=employee_row.employee_user_id,  # type: ignore[arg-type]
+        financial_month_id=employee_row.financial_month_id,
+        index=employee_row.barber_sequence_index,
+    )
+    if existing:
+        existing.amount = amount
+        existing.reconciliation_status = LedgerReconciliationStatus.AWAITING_BARBER_REVIEW
+        if summary_id:
+            existing.barber_daily_summary_id = summary_id
+        db.add(existing)
+        return existing
+
+    row = LedgerEntry(
+        financial_month_id=employee_row.financial_month_id,
+        entry_type=LedgerEntryType.SERVICE,
+        occurred_at=employee_row.occurred_at,
+        business_date=employee_row.business_date,
+        service_type_id=employee_row.service_type_id,
+        employee_user_id=employee_row.employee_user_id,
+        amount=amount,
+        barber_sequence_index=employee_row.barber_sequence_index,
+        record_stream=LedgerRecordStream.MANAGER,
+        reconciliation_status=LedgerReconciliationStatus.AWAITING_BARBER_REVIEW,
+        record_lifecycle=RecordLifecycleState.ACTIVE,
+        payment_method=employee_row.payment_method,
+        note=employee_row.note,
+        created_by_user_id=manager.id,
+        barber_daily_summary_id=summary_id,
+        is_manager_created_without_barber=False,
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
+def list_pending_reconciliation_entries(
+    db: Session,
+    *,
+    barber_user_id: uuid.UUID,
+    business_day: date,
+) -> list[LedgerEntry]:
+    """Employee indexes on this day with no manager stream row at the same month+index."""
+    employee_rows = (
+        _stream_filter(_service_base_filter(db, barber_user_id=barber_user_id), LedgerRecordStream.EMPLOYEE)
+        .filter(LedgerEntry.business_date == business_day)
+        .order_by(LedgerEntry.barber_sequence_index.asc())
+        .all()
+    )
+    pending: list[LedgerEntry] = []
+    for row in employee_rows:
+        if row.barber_sequence_index is None:
+            continue
+        mgr = find_manager_row_at_index(
+            db,
+            barber_user_id=barber_user_id,
+            financial_month_id=row.financial_month_id,
+            index=row.barber_sequence_index,
+        )
+        if mgr is None:
+            pending.append(row)
+    return pending
 
 
 def create_barber_service_entry(
@@ -123,7 +749,12 @@ def create_barber_service_entry(
 
     business_date = business_date_for_instant(occurred_at)
     fm = require_financial_month_for_new_entry(db, business_date, actor)
-    idx = allocate_next_barber_index(db, actor.id)
+    idx = allocate_next_sequence_index(
+        db,
+        barber_user_id=actor.id,
+        financial_month_id=fm.id,
+        stream=LedgerRecordStream.EMPLOYEE,
+    )
 
     row = LedgerEntry(
         financial_month_id=fm.id,
@@ -136,6 +767,7 @@ def create_barber_service_entry(
         original_barber_amount=amount,
         manager_approved_amount=None,
         barber_sequence_index=idx,
+        record_stream=LedgerRecordStream.EMPLOYEE,
         reconciliation_status=LedgerReconciliationStatus.PENDING,
         record_lifecycle=RecordLifecycleState.ACTIVE,
         payment_method=None,
@@ -150,11 +782,15 @@ def create_barber_service_entry(
         db,
         actor_user_id=actor.id,
         impersonator_user_id=impersonator_id,
-        action="ledger.barber_service_create",
+        action="ledger.employee_stream_create",
         entity_type="ledger_entry",
         entity_id=str(row.id),
-        message=f"Barber service #{idx:03d} recorded for ₦{amount}",
-        payload={"barber_sequence_index": idx, "business_date": str(business_date)},
+        message=f"Employee service #{idx:03d} recorded for ₦{amount}",
+        payload={
+            "barber_sequence_index": idx,
+            "business_date": str(business_date),
+            "record_stream": LedgerRecordStream.EMPLOYEE,
+        },
         ip_address=ip_address,
     )
     return row
@@ -179,6 +815,8 @@ def update_barber_service_entry(
     row = db.get(LedgerEntry, entry_id)
     if row is None or row.record_lifecycle != RecordLifecycleState.ACTIVE:
         raise NotFoundError("Entry not found.", code="LEDGER_NOT_FOUND")
+    if row.record_stream != LedgerRecordStream.EMPLOYEE:
+        raise ForbiddenError("Only employee stream entries are editable here.", code="LEDGER_WRONG_STREAM")
     if row.employee_user_id != actor.id:
         raise ForbiddenError("Cannot edit another barber's records.", code="LEDGER_WRONG_BARBER")
     if row.entry_type != LedgerEntryType.SERVICE:
@@ -212,8 +850,7 @@ def update_barber_service_entry(
             raise ValidationAppError("Amount must be positive.", code="INVALID_AMOUNT")
         old = row.amount
         row.amount = amount
-        if row.original_barber_amount is not None:
-            row.original_barber_amount = amount
+        row.original_barber_amount = amount
         audit_service.write_audit_log(
             db,
             actor_user_id=actor.id,
@@ -264,6 +901,8 @@ def soft_delete_barber_entry(
     )
 
     if actor.role in (UserRole.BARBER, UserRole.STAFF):
+        if row.record_stream != LedgerRecordStream.EMPLOYEE:
+            raise ForbiddenError("Providers may only delete employee stream entries.", code="FORBIDDEN")
         if row.employee_user_id != actor.id:
             raise ForbiddenError(
                 "Cannot delete another provider's records.", code="LEDGER_WRONG_EMPLOYEE"
@@ -328,107 +967,44 @@ def purge_entry_admin(
     )
 
 
-def reconciliation_comparison_status(row: LedgerEntry) -> str:
-    """UI label for side-by-side employee vs manager ledger comparison."""
-    st = str(row.reconciliation_status or "")
-    if row.is_manager_created_without_barber or st == LedgerReconciliationStatus.MISSING_BARBER_ENTRY:
-        return "missing_employee_entry"
-
-    employee_amt = row.original_barber_amount if row.original_barber_amount is not None else row.amount
-    manager_amt = row.manager_approved_amount
-
-    if manager_amt is None:
-        return "missing_manager_entry"
-
-    if st == LedgerReconciliationStatus.DISPUTED:
-        return "disputed"
-    if st in {LedgerReconciliationStatus.SETTLED, LedgerReconciliationStatus.LOCKED}:
-        return "settled"
-
-    if employee_amt != manager_amt:
-        return "mismatch"
-
-    if st in {
-        LedgerReconciliationStatus.ADJUSTED,
-        LedgerReconciliationStatus.MANAGER_OVERRIDE,
-        LedgerReconciliationStatus.APPROVED,
-        LedgerReconciliationStatus.AWAITING_BARBER_REVIEW,
-    }:
-        return "adjusted"
-
-    return "matched"
-
-
-def list_barber_day_entries(
-    db: Session,
-    *,
-    barber_user_id: uuid.UUID,
-    business_day: date,
-    page: int,
-    page_size: int,
-) -> tuple[list[LedgerEntry], int]:
-    q = (
-        db.query(LedgerEntry)
-        .filter(
-            LedgerEntry.employee_user_id == barber_user_id,
-            LedgerEntry.business_date == business_day,
-            LedgerEntry.entry_type == LedgerEntryType.SERVICE,
-            LedgerEntry.record_lifecycle == RecordLifecycleState.ACTIVE,
-        )
-        .order_by(
-            LedgerEntry.barber_sequence_index.asc().nulls_last(), LedgerEntry.occurred_at.asc()
-        )
-    )
-    total = q.count()
-    rows = q.offset((page - 1) * page_size).limit(page_size).all()
-    return rows, total
-
-
 def barber_month_revenue_buckets(
     db: Session,
     *,
     barber_user_id: uuid.UUID,
     year: int,
     month: int,
-) -> dict[str, Decimal]:
-    """Split month revenue by reconciliation phase for the barber dashboard."""
+) -> dict[str, Decimal | list[int]]:
+    """
+    Month posture buckets from the centralized index reconciliation engine.
 
-    def _sum_for(
-        statuses: set[LedgerReconciliationStatus] | None, use_manager_amount: bool
-    ) -> Decimal:
-        if use_manager_amount:
-            col = func.coalesce(LedgerEntry.manager_approved_amount, LedgerEntry.amount)
-        else:
-            col = LedgerEntry.amount
-        stmt = db.query(func.coalesce(func.sum(col), 0)).filter(
-            LedgerEntry.employee_user_id == barber_user_id,
-            LedgerEntry.entry_type == LedgerEntryType.SERVICE,
-            LedgerEntry.record_lifecycle == RecordLifecycleState.ACTIVE,
-            extract("year", LedgerEntry.business_date) == year,
-            extract("month", LedgerEntry.business_date) == month,
-        )
-        if statuses is not None:
-            stmt = stmt.filter(LedgerEntry.reconciliation_status.in_(statuses))
-        val = stmt.scalar()
-        return Decimal(val or 0)
+    - pending_total: one-sided indexes (employee or manager record missing)
+    - approved_total: both sides present with matching amounts
+    - mismatch_indexes: both sides present but amounts differ (no monetary total)
+    """
+    slots = _slots_for_calendar_month(
+        db, barber_user_id=barber_user_id, year=year, month=month
+    )
+    pending = Decimal(0)
+    approved = Decimal(0)
+    mismatch_indexes: list[int] = []
 
-    pending = _sum_for({LedgerReconciliationStatus.PENDING}, use_manager_amount=False)
-    awaiting_review = _sum_for(
-        {LedgerReconciliationStatus.AWAITING_BARBER_REVIEW}, use_manager_amount=True
-    )
-    adjusted = _sum_for(
-        {LedgerReconciliationStatus.ADJUSTED, LedgerReconciliationStatus.APPROVED},
-        use_manager_amount=True,
-    )
-    settled = _sum_for({LedgerReconciliationStatus.SETTLED}, use_manager_amount=True)
-    disputed = _sum_for({LedgerReconciliationStatus.DISPUTED}, use_manager_amount=True)
+    for slot in slots:
+        comparison = _pair_reconciliation_status(slot.employee, slot.manager)
+        if comparison in {"missing_employee_entry", "missing_manager_entry"}:
+            row = slot.employee or slot.manager
+            if row is not None:
+                pending += row.amount
+        elif comparison == "mismatch":
+            mismatch_indexes.append(slot.index)
+        elif comparison == "matched":
+            row = slot.employee or slot.manager
+            if row is not None:
+                approved += row.amount
 
     return {
         "pending_total": pending,
-        "awaiting_review_total": awaiting_review,
-        "adjusted_or_approved_total": adjusted,
-        "settled_total": settled,
-        "disputed_total": disputed,
+        "approved_total": approved,
+        "mismatch_indexes": sorted(mismatch_indexes),
     }
 
 
@@ -445,6 +1021,7 @@ def barber_month_gross_recorded(
             LedgerEntry.employee_user_id == barber_user_id,
             LedgerEntry.entry_type == LedgerEntryType.SERVICE,
             LedgerEntry.record_lifecycle == RecordLifecycleState.ACTIVE,
+            LedgerEntry.record_stream == LedgerRecordStream.EMPLOYEE,
             extract("year", LedgerEntry.business_date) == year,
             extract("month", LedgerEntry.business_date) == month,
         )
@@ -454,11 +1031,132 @@ def barber_month_gross_recorded(
 
 
 def _barber_service_entries_filter(db: Session, *, barber_user_id: uuid.UUID):
-    return db.query(LedgerEntry).filter(
+    return _stream_filter(
+        _service_base_filter(db, barber_user_id=barber_user_id),
+        LedgerRecordStream.EMPLOYEE,
+    )
+
+
+_SHOP_OPERATIONAL_ENTRY_TYPES = (
+    LedgerEntryType.SERVICE,
+    LedgerEntryType.SALE,
+    LedgerEntryType.EXPENSE,
+)
+
+
+def _active_operational_ledger_filter():
+    return (
+        LedgerEntry.record_lifecycle == RecordLifecycleState.ACTIVE,
+        LedgerEntry.entry_type.in_(_SHOP_OPERATIONAL_ENTRY_TYPES),
+    )
+
+
+def first_operational_occurred_at(db: Session) -> datetime | None:
+    """Earliest posted service, sale, or expense — start of real accounting history."""
+    return (
+        db.query(func.min(LedgerEntry.occurred_at))
+        .filter(*_active_operational_ledger_filter())
+        .scalar()
+    )
+
+
+def shop_operational_month_keys(db: Session) -> list[tuple[int, int]]:
+    """Distinct (year, month) pairs with active services, sales, or expenses."""
+    base_filter = _active_operational_ledger_filter()
+
+    fm_pairs = (
+        db.query(FinancialMonth.year, FinancialMonth.month)
+        .join(LedgerEntry, LedgerEntry.financial_month_id == FinancialMonth.id)
+        .filter(*base_filter)
+        .distinct()
+        .all()
+    )
+
+    bd_pairs = (
+        db.query(
+            extract("year", LedgerEntry.business_date),
+            extract("month", LedgerEntry.business_date),
+        )
+        .filter(*base_filter, LedgerEntry.business_date.isnot(None))
+        .distinct()
+        .all()
+    )
+
+    seen: set[tuple[int, int]] = set()
+    ordered: list[tuple[int, int]] = []
+    for y, m in (*fm_pairs, *bd_pairs):
+        if y is None or m is None:
+            continue
+        key = (int(y), int(m))
+        if key not in seen:
+            seen.add(key)
+            ordered.append(key)
+
+    ordered.sort()
+    return ordered
+
+
+def operational_months_in_range(
+    db: Session,
+    *,
+    start: datetime,
+    end: datetime,
+) -> list[tuple[int, int]]:
+    """Operational months whose calendar month overlaps [start, end]."""
+    start_pair = (start.year, start.month)
+    end_pair = (end.year, end.month)
+    return [
+        (year, month)
+        for year, month in shop_operational_month_keys(db)
+        if start_pair <= (year, month) <= end_pair
+    ]
+
+
+def barber_operational_month_keys(
+    db: Session,
+    *,
+    barber_user_id: uuid.UUID,
+) -> list[tuple[int, int]]:
+    """Distinct (year, month) pairs with active service entries on either stream."""
+    service_filter = (
         LedgerEntry.employee_user_id == barber_user_id,
         LedgerEntry.entry_type == LedgerEntryType.SERVICE,
         LedgerEntry.record_lifecycle == RecordLifecycleState.ACTIVE,
+        LedgerEntry.record_stream.in_(
+            [LedgerRecordStream.EMPLOYEE, LedgerRecordStream.MANAGER]
+        ),
     )
+
+    fm_pairs = (
+        db.query(FinancialMonth.year, FinancialMonth.month)
+        .join(LedgerEntry, LedgerEntry.financial_month_id == FinancialMonth.id)
+        .filter(*service_filter)
+        .distinct()
+        .all()
+    )
+
+    bd_pairs = (
+        db.query(
+            extract("year", LedgerEntry.business_date),
+            extract("month", LedgerEntry.business_date),
+        )
+        .filter(*service_filter, LedgerEntry.business_date.isnot(None))
+        .distinct()
+        .all()
+    )
+
+    seen: set[tuple[int, int]] = set()
+    ordered: list[tuple[int, int]] = []
+    for y, m in (*fm_pairs, *bd_pairs):
+        if y is None or m is None:
+            continue
+        key = (int(y), int(m))
+        if key not in seen:
+            seen.add(key)
+            ordered.append(key)
+
+    ordered.sort(reverse=True)
+    return ordered
 
 
 def barber_month_services_count(
@@ -499,46 +1197,96 @@ def compute_index_reconciliation_issues(
     barber_user_id: uuid.UUID,
     business_day: date,
 ) -> dict[str, Any]:
-    """Detect duplicate indexes (integrity) and amount deltas barber vs manager draft."""
-    rows = (
+    """Detect duplicate indexes per stream and amount deltas at paired positions."""
+    slots = _slots_for_business_day(db, barber_user_id=barber_user_id, business_day=business_day)
+
+    employee_rows = (
+        _stream_filter(_service_base_filter(db, barber_user_id=barber_user_id), LedgerRecordStream.EMPLOYEE)
+        .filter(LedgerEntry.business_date == business_day)
+        .all()
+    )
+    manager_rows = (
+        _stream_filter(_service_base_filter(db, barber_user_id=barber_user_id), LedgerRecordStream.MANAGER)
+        .filter(LedgerEntry.business_date == business_day)
+        .all()
+    )
+
+    def _duplicates(rows: list[LedgerEntry]) -> list[int]:
+        by_index: dict[int, int] = {}
+        for r in rows:
+            if r.barber_sequence_index is None:
+                continue
+            by_index[r.barber_sequence_index] = by_index.get(r.barber_sequence_index, 0) + 1
+        return sorted(i for i, c in by_index.items() if c > 1)
+
+    mismatches: list[dict[str, Any]] = []
+    missing_manager_indexes: list[int] = []
+    missing_employee_indexes: list[int] = []
+
+    for slot in slots:
+        if slot.employee and slot.manager:
+            if slot.employee.amount != slot.manager.amount:
+                mismatches.append(
+                    {
+                        "index": slot.index,
+                        "employee_entry_id": str(slot.employee.id),
+                        "manager_entry_id": str(slot.manager.id),
+                        "employee_amount": str(slot.employee.amount),
+                        "manager_amount": str(slot.manager.amount),
+                    }
+                )
+        elif slot.employee and not slot.manager:
+            missing_manager_indexes.append(slot.index)
+        elif slot.manager and not slot.employee:
+            missing_employee_indexes.append(slot.index)
+
+    return {
+        "duplicate_indexes": _duplicates(employee_rows) + _duplicates(manager_rows),
+        "amount_mismatches": mismatches,
+        "indexes_present": sorted({s.index for s in slots}),
+        "missing_manager_indexes": sorted(missing_manager_indexes),
+        "missing_employee_indexes": sorted(missing_employee_indexes),
+    }
+
+
+def list_manager_official_timeline(
+    db: Session,
+    *,
+    limit: int = 200,
+) -> list[LedgerEntry]:
+    """Operational timeline for admin/manager: manager stream services plus sales/expenses."""
+    return (
         db.query(LedgerEntry)
         .filter(
-            LedgerEntry.employee_user_id == barber_user_id,
-            LedgerEntry.business_date == business_day,
-            LedgerEntry.entry_type == LedgerEntryType.SERVICE,
             LedgerEntry.record_lifecycle == RecordLifecycleState.ACTIVE,
+            or_(
+                LedgerEntry.entry_type != LedgerEntryType.SERVICE,
+                LedgerEntry.record_stream == LedgerRecordStream.MANAGER,
+            ),
         )
+        .order_by(LedgerEntry.occurred_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+
+def day_employee_stream_entries(
+    db: Session, barber_user_id: uuid.UUID, business_day: date
+) -> list[LedgerEntry]:
+    return (
+        _stream_filter(_service_base_filter(db, barber_user_id=barber_user_id), LedgerRecordStream.EMPLOYEE)
+        .filter(LedgerEntry.business_date == business_day)
         .order_by(LedgerEntry.barber_sequence_index.asc())
         .all()
     )
-    by_index: dict[int, list[LedgerEntry]] = {}
-    for r in rows:
-        if r.barber_sequence_index is None:
-            continue
-        by_index.setdefault(r.barber_sequence_index, []).append(r)
 
-    duplicates = [idx for idx, lst in by_index.items() if len(lst) > 1]
-    mismatches: list[dict[str, Any]] = []
-    for r in rows:
-        if r.barber_sequence_index is None:
-            continue
-        orig = r.original_barber_amount or r.amount
-        mgr = r.manager_approved_amount
-        if mgr is not None and orig != mgr:
-            mismatches.append(
-                {
-                    "index": r.barber_sequence_index,
-                    "entry_id": str(r.id),
-                    "original_barber_amount": str(orig),
-                    "manager_approved_amount": str(mgr),
-                }
-            )
 
-    missing_entries: list[int] = []  # reserved for future manager-only index sets
-
-    return {
-        "duplicate_indexes": duplicates,
-        "amount_mismatches": mismatches,
-        "indexes_present": sorted(by_index.keys()),
-        "missing_manager_indexes": missing_entries,
-    }
+def day_manager_stream_entries(
+    db: Session, barber_user_id: uuid.UUID, business_day: date
+) -> list[LedgerEntry]:
+    return (
+        _stream_filter(_service_base_filter(db, barber_user_id=barber_user_id), LedgerRecordStream.MANAGER)
+        .filter(LedgerEntry.business_date == business_day)
+        .order_by(LedgerEntry.barber_sequence_index.asc())
+        .all()
+    )

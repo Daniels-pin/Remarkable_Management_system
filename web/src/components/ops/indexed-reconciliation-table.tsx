@@ -1,0 +1,324 @@
+"use client";
+
+import * as React from "react";
+import { ChevronDown } from "lucide-react";
+
+import { ReconciliationComparisonBadge } from "@/components/ops/reconciliation-comparison-badge";
+import type { ReconciliationComparisonStatus } from "@/lib/reconciliation-status";
+import { rowHighlightFromComparison } from "@/lib/reconciliation-status";
+import type { ReconciliationWorkspaceRow } from "@/lib/api";
+import { formatNaira, formatTimeLabel, formatTimeShort } from "@/lib/format";
+import { cn } from "@/lib/utils";
+
+const DESKTOP_GRID =
+  "md:grid md:grid-cols-[3.25rem_minmax(5rem,1fr)_4.75rem_4.75rem_5.25rem_3.25rem_2.75rem_1.5rem] md:items-center md:gap-x-3";
+
+export type IndexedReconciliationRow = ReconciliationWorkspaceRow & {
+  payment_method?: string | null;
+};
+
+export type ReconciliationViewerSide = "employee" | "manager";
+
+function indexLabel(row: IndexedReconciliationRow): string {
+  return (
+    row.index_label ??
+    (row.index != null ? `#${String(row.index).padStart(3, "0")}` : "—")
+  );
+}
+
+function formatPayment(method: string | null | undefined): string | null {
+  if (!method) return null;
+  return method.replace(/_/g, " ");
+}
+
+function CompactAmount({
+  amount,
+  missing,
+  className,
+}: {
+  amount: string | null;
+  missing: boolean;
+  className?: string;
+}) {
+  if (missing || amount == null) {
+    return (
+      <span className={cn("text-[11px] tabular-nums text-[var(--muted-foreground)]", className)}>
+        —
+      </span>
+    );
+  }
+  return (
+    <span
+      className={cn("text-xs font-medium tabular-nums text-[var(--foreground)]", className)}
+    >
+      {formatNaira(Number(amount))}
+    </span>
+  );
+}
+
+function AuditField({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <p className="text-[10px] font-medium uppercase tracking-[0.12em] text-[var(--muted-foreground)]">
+        {label}
+      </p>
+      <div className="mt-1">{children}</div>
+    </div>
+  );
+}
+
+function SideAudit({
+  label,
+  side,
+  missing,
+}: {
+  label: string;
+  side: IndexedReconciliationRow["employee"];
+  missing: boolean;
+}) {
+  if (missing || !side) {
+    return (
+      <AuditField label={label}>
+        <p className="text-[var(--muted-foreground)]">Not recorded</p>
+      </AuditField>
+    );
+  }
+  const payment = formatPayment(side.payment_method);
+  return (
+    <AuditField label={label}>
+      <p className="font-medium text-[var(--foreground)]">
+        {side.service_name} ·{" "}
+        <span className="tabular-nums">{formatNaira(Number(side.amount))}</span>
+        {payment ? <span className="text-[var(--muted-foreground)]"> · {payment}</span> : null}
+      </p>
+      <p className="mt-0.5 text-[10px] text-[var(--muted-foreground)]">
+        {formatTimeLabel(side.occurred_at)}
+        {side.business_date ? ` · ${side.business_date}` : ""}
+      </p>
+      {side.note?.trim() ? (
+        <p className="mt-1 text-xs text-[var(--muted-foreground)]">{side.note}</p>
+      ) : null}
+    </AuditField>
+  );
+}
+
+function ReconciliationRow({
+  row,
+  showBusinessDate,
+  primarySide,
+  leftLabel,
+  rightLabel,
+}: {
+  row: IndexedReconciliationRow;
+  showBusinessDate: boolean;
+  primarySide: ReconciliationViewerSide;
+  leftLabel: string;
+  rightLabel: string;
+}) {
+  const [expanded, setExpanded] = React.useState(false);
+  const status = row.comparison_status as ReconciliationComparisonStatus;
+  const employeeMissing = status === "missing_employee_entry" || row.employee_amount === null;
+  const managerMissing =
+    status === "missing_manager_entry" ||
+    status === "waiting_for_reconciliation" ||
+    row.manager_amount === null;
+
+  const employeeAmount = row.employee?.amount ?? row.employee_amount;
+  const managerAmount = row.manager?.amount ?? row.manager_amount;
+  const displayService =
+    (primarySide === "employee" ? row.employee?.service_name : row.manager?.service_name) ??
+    row.service_name;
+  const payment = formatPayment(
+    row.manager?.payment_method ?? row.employee?.payment_method ?? row.payment_method,
+  );
+  const time = formatTimeShort(
+    (primarySide === "employee" ? row.employee?.occurred_at : row.manager?.occurred_at) ??
+      row.occurred_at,
+  );
+
+  const leftAmount = primarySide === "employee" ? employeeAmount : managerAmount;
+  const rightAmount = primarySide === "employee" ? managerAmount : employeeAmount;
+  const leftMissing = primarySide === "employee" ? employeeMissing : managerMissing;
+  const rightMissing = primarySide === "employee" ? managerMissing : employeeMissing;
+
+  const toggle = () => setExpanded((v) => !v);
+  const leftAuditLabel = primarySide === "employee" ? "Employee record" : "Manager record";
+  const rightAuditLabel = primarySide === "employee" ? "Manager record" : "Employee record";
+  const leftSide = primarySide === "employee" ? row.employee : row.manager;
+  const rightSide = primarySide === "employee" ? row.manager : row.employee;
+
+  return (
+    <li
+      className={cn(
+        "border-b border-[var(--border)]/70 last:border-b-0 transition-colors",
+        rowHighlightFromComparison(status),
+        expanded && "bg-[var(--muted)]/15",
+      )}
+    >
+      <div
+        role="button"
+        tabIndex={0}
+        aria-expanded={expanded}
+        onClick={toggle}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            toggle();
+          }
+        }}
+        className={cn("cursor-pointer px-3 py-1.5 lg:px-4", DESKTOP_GRID)}
+      >
+        <div className="flex min-w-0 items-center gap-2 md:contents">
+          <span className="shrink-0 font-mono text-[11px] font-medium tabular-nums text-[var(--muted-foreground)] md:col-start-1">
+            {indexLabel(row)}
+          </span>
+          <span className="min-w-0 flex-1 truncate text-xs font-medium text-[var(--foreground)] md:col-start-2">
+            {displayService}
+          </span>
+          <span className="shrink-0 md:hidden">
+            <ReconciliationComparisonBadge status={status} compact />
+          </span>
+          <ChevronDown
+            className={cn(
+              "size-3.5 shrink-0 text-[var(--muted-foreground)] transition-transform md:hidden",
+              expanded && "rotate-180",
+            )}
+            aria-hidden
+          />
+        </div>
+
+        <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 pl-10 text-[10px] text-[var(--muted-foreground)] md:hidden">
+          <span className="inline-flex items-center gap-1">
+            <span className="uppercase tracking-wider opacity-60">{leftLabel}</span>
+            <CompactAmount amount={leftAmount} missing={leftMissing} />
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span className="uppercase tracking-wider opacity-60">{rightLabel}</span>
+            <CompactAmount amount={rightAmount} missing={rightMissing} />
+          </span>
+          {payment ? <span className="capitalize">{payment}</span> : null}
+          <span className="tabular-nums">{time}</span>
+          {showBusinessDate && row.business_date ? <span>{row.business_date}</span> : null}
+        </div>
+
+        <div className="hidden text-right md:col-start-3 md:block">
+          <CompactAmount amount={leftAmount} missing={leftMissing} className="md:ml-auto" />
+        </div>
+        <div className="hidden text-right md:col-start-4 md:block">
+          <CompactAmount amount={rightAmount} missing={rightMissing} className="md:ml-auto" />
+        </div>
+        <div className="hidden md:col-start-5 md:block">
+          <ReconciliationComparisonBadge status={status} compact />
+        </div>
+        <span className="hidden truncate capitalize text-[11px] text-[var(--muted-foreground)] md:col-start-6 md:block">
+          {payment ?? "—"}
+        </span>
+        <div className="hidden text-right text-[11px] tabular-nums text-[var(--muted-foreground)] md:col-start-7">
+          {showBusinessDate && row.business_date ? (
+            <span className="block text-[10px] leading-tight">{row.business_date.slice(5)}</span>
+          ) : null}
+          <span>{time}</span>
+        </div>
+        <div className="hidden md:col-start-8 md:flex md:items-center md:justify-center">
+          <ChevronDown
+            className={cn(
+              "size-3.5 text-[var(--muted-foreground)] transition-transform",
+              expanded && "rotate-180",
+            )}
+            aria-hidden
+          />
+        </div>
+      </div>
+
+      {expanded ? (
+        <div className="border-t border-[var(--border)]/60 bg-[var(--muted)]/10 px-3 py-2.5 lg:px-4">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <SideAudit label={leftAuditLabel} side={leftSide} missing={leftMissing} />
+            <SideAudit label={rightAuditLabel} side={rightSide} missing={rightMissing} />
+            <AuditField label="Status">
+              <ReconciliationComparisonBadge status={status} />
+              <p className="mt-1 capitalize text-[var(--muted-foreground)]">
+                {row.reconciliation_status?.replace(/_/g, " ") ?? "—"}
+              </p>
+            </AuditField>
+          </div>
+          <p className="mt-2 font-mono text-[10px] text-[var(--muted-foreground)]">
+            {row.employee_entry_id ? `E:${row.employee_entry_id}` : ""}
+            {row.employee_entry_id && row.manager_entry_id ? " · " : ""}
+            {row.manager_entry_id ? `M:${row.manager_entry_id}` : ""}
+          </p>
+        </div>
+      ) : null}
+    </li>
+  );
+}
+
+export function IndexedReconciliationTable({
+  rows,
+  loading,
+  showBusinessDate = false,
+  primarySide = "employee",
+  employeeColumnLabel = "Employee",
+  managerColumnLabel = "Manager",
+  emptyTitle = "No service entries",
+  emptyBody = "Indexed reconciliation rows appear here as services are recorded and reviewed.",
+}: {
+  rows: IndexedReconciliationRow[];
+  loading: boolean;
+  showBusinessDate?: boolean;
+  /** Which stream appears in the left/first column for the logged-in viewer. */
+  primarySide?: ReconciliationViewerSide;
+  employeeColumnLabel?: string;
+  managerColumnLabel?: string;
+  emptyTitle?: string;
+  emptyBody?: string;
+}) {
+  const leftLabel = primarySide === "employee" ? employeeColumnLabel : managerColumnLabel;
+  const rightLabel = primarySide === "employee" ? managerColumnLabel : employeeColumnLabel;
+
+  return (
+    <div className="overflow-x-auto rounded-[var(--radius-lg)] border border-[var(--border)]/90 bg-[var(--card)] shadow-[var(--shadow-card)]">
+      <div className="md:min-w-[640px]">
+        <div
+          className={cn(
+            "hidden border-b border-[var(--border)]/80 bg-[var(--muted)]/25 px-3 py-1.5 text-[9px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)] lg:px-4",
+            DESKTOP_GRID,
+          )}
+        >
+          <span>Index</span>
+          <span>Service</span>
+          <span className="text-right">{leftLabel}</span>
+          <span className="text-right">{rightLabel}</span>
+          <span>Status</span>
+          <span>Pay</span>
+          <span className="text-right">Time</span>
+          <span className="sr-only">Details</span>
+        </div>
+
+        {loading ? (
+          <div className="px-4 py-10 text-center text-sm text-[var(--muted-foreground)]">
+            Loading…
+          </div>
+        ) : rows.length === 0 ? (
+          <div className="px-4 py-10 text-center">
+            <p className="text-sm font-medium text-[var(--foreground)]">{emptyTitle}</p>
+            <p className="mx-auto mt-1 max-w-sm text-xs text-[var(--muted-foreground)]">{emptyBody}</p>
+          </div>
+        ) : (
+          <ul>
+            {rows.map((row) => (
+              <ReconciliationRow
+                key={row.id}
+                row={row}
+                showBusinessDate={showBusinessDate}
+                primarySide={primarySide}
+                leftLabel={leftLabel}
+                rightLabel={rightLabel}
+              />
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}

@@ -13,6 +13,7 @@ from app.database.base import Base
 from app.models.enums import (
     LedgerEntryType,
     LedgerReconciliationStatus,
+    LedgerRecordStream,
     PaymentMethod,
     RecordLifecycleState,
 )
@@ -25,8 +26,9 @@ if TYPE_CHECKING:
 class LedgerEntry(Base, TimestampMixin):
     """Unified operational timeline: services, sales, expenses.
 
-    Barber service rows carry a monotonic ``barber_sequence_index`` for index-based
-    reconciliation with the manager ledger (identity + index + amount).
+    Service rows carry a monotonic ``barber_sequence_index`` per employee, financial
+    month, and ``record_stream`` (employee vs manager). Reconciliation compares both
+    streams by index position — not by shared row identity.
     """
 
     __tablename__ = "ledger_entries"
@@ -66,6 +68,12 @@ class LedgerEntry(Base, TimestampMixin):
     manager_approved_amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
 
     barber_sequence_index: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+
+    record_stream: Mapped[LedgerRecordStream | None] = mapped_column(
+        Enum(LedgerRecordStream, native_enum=False, length=16),
+        nullable=True,
+        index=True,
+    )
 
     reconciliation_status: Mapped[LedgerReconciliationStatus | None] = mapped_column(
         Enum(LedgerReconciliationStatus, native_enum=False, length=40),

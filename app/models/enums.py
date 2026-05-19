@@ -55,6 +55,13 @@ class RecordLifecycleState(StrEnum):
     PURGED = "purged"
 
 
+class LedgerRecordStream(StrEnum):
+    """Independent operational index stream for dual-entry reconciliation."""
+
+    EMPLOYEE = "employee"
+    MANAGER = "manager"
+
+
 class LedgerReconciliationStatus(StrEnum):
     """Per-entry lifecycle for barber/manager financial alignment."""
 

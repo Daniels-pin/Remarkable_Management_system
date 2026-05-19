@@ -15,12 +15,14 @@ from app.models.enums import (
     CommissionPayoutState,
     ExpensePaymentSource,
     LedgerEntryType,
+    LedgerRecordStream,
     PaymentMethod,
     RecordLifecycleState,
     UserRole,
 )
 from app.models.ledger import LedgerEntry
 from app.services.business_time import shop_tz
+from app.services.ledger_service import first_operational_occurred_at
 
 _ZERO = Decimal("0")
 
@@ -33,6 +35,15 @@ _PAYROLL_CATEGORY_NAMES = frozenset(
         "wages",
         "barber payout",
         "staff payout",
+    }
+)
+
+_RENT_CATEGORY_NAMES = frozenset(
+    {
+        "rent",
+        "lease",
+        "shop rent",
+        "property rent",
     }
 )
 
@@ -53,6 +64,16 @@ def is_payroll_expense_category(name: str | None) -> bool:
     if normalized in _PAYROLL_CATEGORY_NAMES:
         return True
     return any(token in normalized for token in ("salary", "commission", "payroll", "payout"))
+
+
+def is_rent_expense_category(name: str | None) -> bool:
+    """True when an expense category represents rent or lease (owner-level)."""
+    if not name:
+        return False
+    normalized = name.strip().lower()
+    if normalized in _RENT_CATEGORY_NAMES:
+        return True
+    return "rent" in normalized or "lease" in normalized
 
 
 def normalize_expense_payment_source(raw: str | None) -> str | None:
@@ -92,6 +113,7 @@ def preset_date_range(
         start = datetime(today.year, 1, 1, tzinfo=tz)
         return start, now
     if preset == "all":
+        # Caller should prefer snapshot_time_bounds(db, ...) for real history bounds.
         start = datetime(2000, 1, 1, tzinfo=tz)
         return start, now
     if preset == "custom" and custom_from and custom_to:
@@ -101,6 +123,35 @@ def preset_date_range(
 
     start = datetime(today.year, today.month, 1, tzinfo=tz)
     return start, now
+
+
+def snapshot_time_bounds(
+    db: Session,
+    preset: str,
+    *,
+    custom_from: date | None = None,
+    custom_to: date | None = None,
+) -> tuple[datetime, datetime]:
+    """Resolve [start, end] for financial snapshots; all-time starts at first real entry."""
+    tz = shop_tz()
+    now = datetime.now(tz)
+
+    if preset == "all":
+        first = first_operational_occurred_at(db)
+        if first is None:
+            return now, now
+        if first.tzinfo is None:
+            first = first.replace(tzinfo=tz)
+        else:
+            first = first.astimezone(tz)
+        return first, now
+
+    return preset_date_range(
+        preset,
+        custom_from=custom_from,
+        custom_to=custom_to,
+        tz=tz,
+    )
 
 
 def _active_in_range(db: Session, start: datetime, end: datetime):
@@ -119,7 +170,10 @@ def financial_snapshot(
 ) -> dict:
     services_revenue = _decimal(
         _active_in_range(db, start, end)
-        .filter(LedgerEntry.entry_type == LedgerEntryType.SERVICE)
+        .filter(
+            LedgerEntry.entry_type == LedgerEntryType.SERVICE,
+            LedgerEntry.record_stream == LedgerRecordStream.MANAGER,
+        )
         .with_entities(func.coalesce(func.sum(LedgerEntry.amount), 0))
         .scalar()
     )
@@ -145,11 +199,14 @@ def financial_snapshot(
     admin_transfer_expenses = _ZERO
     operational_shop_cash = _ZERO
     operational_admin_transfer = _ZERO
+    rent_shop_cash = _ZERO
+    rent_admin_transfer = _ZERO
     payroll_expenses = _ZERO
     for row in expense_rows:
         amt = _decimal(row.amount)
         cat_name = category_names.get(row.expense_category_id) if row.expense_category_id else None
         is_payroll = is_payroll_expense_category(cat_name)
+        is_rent = is_rent_expense_category(cat_name)
         bucket = normalize_expense_payment_source(
             str(row.payment_method) if row.payment_method else None
         )
@@ -157,23 +214,34 @@ def financial_snapshot(
             shop_cash_expenses += amt
             if is_payroll:
                 payroll_expenses += amt
+            elif is_rent:
+                rent_shop_cash += amt
             else:
                 operational_shop_cash += amt
         elif bucket == ExpensePaymentSource.ADMIN_TRANSFER:
             admin_transfer_expenses += amt
             if is_payroll:
                 payroll_expenses += amt
+            elif is_rent:
+                rent_admin_transfer += amt
             else:
                 operational_admin_transfer += amt
         else:
             shop_cash_expenses += amt
             if is_payroll:
                 payroll_expenses += amt
+            elif is_rent:
+                rent_shop_cash += amt
             else:
                 operational_shop_cash += amt
 
     operational_expenses = operational_shop_cash + operational_admin_transfer
-    total_expenses = shop_cash_expenses + admin_transfer_expenses
+    rent_expenses = rent_shop_cash + rent_admin_transfer
+    from app.services.payroll_service import period_team_payroll_obligations
+
+    team_obligations = period_team_payroll_obligations(db, start=start, end=end)
+    payroll_commission = team_obligations
+    total_expenses = operational_expenses + rent_expenses + payroll_commission
     total_revenue = services_revenue + product_sales
     net_profit = total_revenue - total_expenses
 
@@ -215,14 +283,18 @@ def financial_snapshot(
         "product_sales_revenue": str(product_sales),
         "total_expenses": str(total_expenses),
         "operational_expenses": str(operational_expenses),
-        "payroll_commission": str(payroll_expenses),
+        "rent_expenses": str(rent_expenses),
+        "payroll_commission": str(payroll_commission),
         "net_profit": str(net_profit),
         "expense_sources": {
             "shop_cash": str(shop_cash_expenses),
             "admin_transfer": str(admin_transfer_expenses),
             "operational_shop_cash": str(operational_shop_cash),
             "operational_admin_transfer": str(operational_admin_transfer),
+            "rent_shop_cash": str(rent_shop_cash),
+            "rent_admin_transfer": str(rent_admin_transfer),
             "total": str(total_expenses),
+            "ledger_payroll": str(payroll_expenses),
             "operational_total": str(operational_expenses),
         },
         "payment_methods": {k: str(v) for k, v in payment_methods.items()},
@@ -239,13 +311,17 @@ def shape_summary_for_role(snapshot: dict, role: UserRole | str) -> dict:
     return {
         **snapshot,
         "total_expenses": operational,
+        "rent_expenses": "0",
         "payroll_commission": "0",
         "net_profit": "0",
         "expense_sources": {
             **sources,
             "shop_cash": sources["operational_shop_cash"],
             "admin_transfer": sources["operational_admin_transfer"],
+            "rent_shop_cash": "0",
+            "rent_admin_transfer": "0",
             "total": operational,
+            "operational_total": operational,
         },
     }
 

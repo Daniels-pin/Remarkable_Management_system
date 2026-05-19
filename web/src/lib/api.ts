@@ -184,6 +184,8 @@ export type ExpenseSourcesRow = {
   operational_shop_cash?: string;
   operational_admin_transfer?: string;
   operational_total?: string;
+  rent_shop_cash?: string;
+  rent_admin_transfer?: string;
 };
 
 export type FinancialMonthState = "open" | "grace_period" | "locked";
@@ -199,9 +201,21 @@ export type FinancialMonthRow = {
   locked_at?: string | null;
   total_revenue?: string;
   total_expenses?: string;
+  operational_expenses?: string;
+  rent_expenses?: string;
+  payroll_commission?: string;
   net_profit?: string | null;
   expense_sources?: ExpenseSourcesRow;
   snapshot?: Record<string, unknown> | null;
+  /** Personal earnings (barber/staff) */
+  approved_total?: string;
+  earnings_amount?: string;
+  commission_pct_at_close?: string | null;
+  statement_id?: string | null;
+  payout_state?: string;
+  payout_payment_date?: string | null;
+  payout_paid_by_label?: string | null;
+  payout_note?: string | null;
 };
 
 export type OperationsSummaryResponse = {
@@ -210,6 +224,7 @@ export type OperationsSummaryResponse = {
   product_sales_revenue: string;
   total_expenses: string;
   operational_expenses: string;
+  rent_expenses?: string;
   payroll_commission: string;
   net_profit: string;
   expense_sources: ExpenseSourcesRow;
@@ -399,13 +414,7 @@ export type DirectoryBarberRow = {
   salary_type: SalaryType;
 };
 
-export type ReconciliationPosture =
-  | "clear"
-  | "pending"
-  | "awaiting_review"
-  | "in_review"
-  | "settled"
-  | "disputed";
+export type ReconciliationPosture = "clear" | "pending" | "approved" | "mismatch";
 
 export type DirectoryTeamRow = DirectoryBarberRow & {
   role: "barber" | "staff";
@@ -449,6 +458,10 @@ export type LedgerRow = {
     | "missing_barber_entry"
     | "manager_override"
     | null;
+  original_barber_amount?: string | null;
+  manager_approved_amount?: string | null;
+  comparison_status?: string | null;
+  is_manager_created_without_barber?: boolean;
   service_type: { id: string; name: string } | null;
   sale_category: { id: string; name: string } | null;
   expense_category: { id: string; name: string } | null;
@@ -478,6 +491,25 @@ export function createBarbershopLedgerEntry(body: Record<string, unknown>) {
     method: "POST",
     body: JSON.stringify(body),
   });
+}
+
+export type PendingReconciliationIndex = {
+  entry_id: string;
+  barber_sequence_index: number | null;
+  index_label: string | null;
+  service_type_id: string | null;
+  service_name: string;
+  employee_amount: string;
+  occurred_at: string;
+};
+
+export function listPendingReconciliationIndexes(
+  barberUserId: string,
+  businessDate: string,
+) {
+  return apiFetch<{ business_date: string; items: PendingReconciliationIndex[] }>(
+    `/api/v1/manager/reconciliation/day/${barberUserId}/${businessDate}/pending-indexes`,
+  );
 }
 
 export type DirectoryBarberDetail = {
@@ -531,13 +563,12 @@ export function getDirectoryTeamMemberMonthStats(
     current_month_services_count?: number;
     all_time_gross_recorded?: string;
     all_time_services_count?: number;
+    all_time_approved_total?: string;
     all_time_commission_total?: string;
     pending_total?: string;
-    awaiting_review_total?: string;
-    adjusted_or_approved_total?: string;
-    settled_total?: string;
-    disputed_total?: string;
-    expected_payout_on_settled?: string;
+    approved_total?: string;
+    mismatch_indexes?: number[];
+    expected_payout_on_approved?: string;
     reconciliation_posture?: ReconciliationPosture;
   }>(`/api/v1/barbershop/directory/team/${id}/month-stats${q ? `?${q}` : ""}`);
 }
@@ -560,13 +591,12 @@ export function getDirectoryBarberMonthStats(
     current_month_services_count?: number;
     all_time_gross_recorded?: string;
     all_time_services_count?: number;
+    all_time_approved_total?: string;
     all_time_commission_total?: string;
     pending_total?: string;
-    awaiting_review_total?: string;
-    adjusted_or_approved_total?: string;
-    settled_total?: string;
-    disputed_total?: string;
-    expected_payout_on_settled?: string;
+    approved_total?: string;
+    mismatch_indexes?: number[];
+    expected_payout_on_approved?: string;
   }>(
     `/api/v1/barbershop/directory/barbers/${id}/month-stats${q ? `?${q}` : ""}`,
   );
@@ -656,19 +686,58 @@ export function listDirectoryTeamMemberReconciliations(
   );
 }
 
+export type ReconciliationStreamSide = {
+  id: string;
+  amount: string;
+  service_name: string;
+  service_type_id?: string | null;
+  occurred_at: string;
+  business_date?: string | null;
+  payment_method?: string | null;
+  note?: string | null;
+  reconciliation_status?: string | null;
+};
+
 export type ReconciliationWorkspaceRow = {
   id: string;
+  employee_entry_id?: string | null;
+  manager_entry_id?: string | null;
   index: number | null;
   index_label: string | null;
   service_name: string;
   employee_amount: string | null;
   manager_amount: string | null;
+  employee?: ReconciliationStreamSide | null;
+  manager?: ReconciliationStreamSide | null;
   employee_label: string | null;
   manager_label: string | null;
   comparison_status: string;
   reconciliation_status: string | null;
   business_date: string | null;
   occurred_at: string;
+  payment_method?: string | null;
+  note?: string | null;
+  is_manager_created_without_barber?: boolean;
+  amount?: string | null;
+  display_amount?: string | null;
+};
+
+export type OperationalMonthItem = {
+  year: number;
+  month: number;
+  state?: string;
+  is_current?: boolean;
+};
+
+export type ReconciliationHistoryResponse = {
+  year: number;
+  month: number;
+  is_current_month: boolean;
+  read_only?: boolean;
+  page: number;
+  page_size: number;
+  total: number;
+  items: ReconciliationWorkspaceRow[];
 };
 
 export function getDirectoryTeamMemberReconciliationWorkspace(
@@ -809,14 +878,12 @@ export type BarberDashboardStats = {
   current_month_services_count: number;
   all_time_gross_recorded: string;
   all_time_services_count: number;
+  all_time_approved_total?: string;
   all_time_commission_total: string;
   pending_total: string;
-  awaiting_review_total: string;
-  adjusted_or_approved_total: string;
-  approved_totals: string;
-  settled_total: string;
-  expected_payout_on_settled: string;
-  disputed_total: string;
+  approved_total: string;
+  mismatch_indexes: number[];
+  expected_payout_on_approved: string;
 };
 
 export function getBarberDashboard(year?: number, month?: number) {
@@ -830,17 +897,87 @@ export function getBarberDashboard(year?: number, month?: number) {
 export type BarberLedgerServiceRow = {
   id: string;
   barber_sequence_index: number | null;
+  index_label?: string | null;
   occurred_at: string;
   business_date: string | null;
-  service_type_id: string | null;
-  amount: string;
+  service_type_id?: string | null;
+  service_name?: string;
+  amount?: string | null;
+  display_amount?: string | null;
+  employee_amount?: string | null;
+  manager_amount?: string | null;
+  employee?: ReconciliationStreamSide | null;
+  manager?: ReconciliationStreamSide | null;
   original_barber_amount: string | null;
   manager_approved_amount: string | null;
+  comparison_status?: string;
   reconciliation_status: string | null;
   is_manager_created_without_barber: boolean;
   payment_method: "cash" | "transfer" | "pos" | "cash_shop" | "admin_transfer" | null;
   note: string | null;
 };
+
+export function getBarberOperationalMonths() {
+  return apiFetch<{ items: OperationalMonthItem[] }>("/api/v1/barber/reconciliation/months");
+}
+
+export function getBarberReconciliationHistory(opts: {
+  year?: number;
+  month?: number;
+  page?: number;
+  page_size?: number;
+}) {
+  const qs = new URLSearchParams();
+  if (opts.year) qs.set("year", String(opts.year));
+  if (opts.month) qs.set("month", String(opts.month));
+  if (opts.page) qs.set("page", String(opts.page));
+  if (opts.page_size) qs.set("page_size", String(opts.page_size));
+  const q = qs.toString();
+  return apiFetch<ReconciliationHistoryResponse>(
+    `/api/v1/barber/reconciliation/history${q ? `?${q}` : ""}`,
+  );
+}
+
+export function getDirectoryTeamMemberOperationalMonths(id: string) {
+  return apiFetch<{ items: OperationalMonthItem[] }>(
+    `/api/v1/barbershop/directory/team/${id}/reconciliation-months`,
+  );
+}
+
+export function getDirectoryTeamMemberReconciliationHistory(
+  id: string,
+  opts: { year?: number; month?: number; page?: number; page_size?: number },
+) {
+  const qs = new URLSearchParams();
+  if (opts.year) qs.set("year", String(opts.year));
+  if (opts.month) qs.set("month", String(opts.month));
+  if (opts.page) qs.set("page", String(opts.page));
+  if (opts.page_size) qs.set("page_size", String(opts.page_size));
+  const q = qs.toString();
+  return apiFetch<ReconciliationHistoryResponse>(
+    `/api/v1/barbershop/directory/team/${id}/reconciliation-history${q ? `?${q}` : ""}`,
+  );
+}
+
+export function getBarberReconciliationWorkspace(
+  businessDate: string,
+  page = 1,
+  pageSize = 15,
+) {
+  const qs = new URLSearchParams({
+    business_date: businessDate,
+    page: String(page),
+    page_size: String(pageSize),
+  });
+  return apiFetch<{
+    business_date: string;
+    page: number;
+    page_size: number;
+    total: number;
+    daily_summary_status: string;
+    items: ReconciliationWorkspaceRow[];
+  }>(`/api/v1/barber/reconciliation/workspace?${qs}`);
+}
 
 export function listBarberDayLedger(
   businessDate: string,

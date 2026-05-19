@@ -303,6 +303,7 @@ def serialize_month_row(
     else:
         end = datetime(fm.year, fm.month + 1, 1, tzinfo=tz) - timedelta(microseconds=1)
     live = operations_analytics_service.financial_snapshot(db, start=start, end=end)
+    shaped = operations_analytics_service.shape_summary_for_role(live, role)
 
     snapshot_payload = None
     if fm.snapshot is not None:
@@ -316,11 +317,21 @@ def serialize_month_row(
         if snap:
             snapshot_payload = snap.payload
 
-    revenue = live["total_revenue"]
-    expenses = live["total_expenses"]
+    revenue = shaped["total_revenue"]
+    expenses = shaped["total_expenses"]
+    operational = shaped["operational_expenses"]
+    rent = shaped.get("rent_expenses", "0")
+    payroll = shaped.get("payroll_commission", "0")
     if snapshot_payload:
         revenue = snapshot_payload.get("total_revenue", revenue)
-        expenses = snapshot_payload.get("total_expenses", expenses)
+        if str(role) == UserRole.ADMIN:
+            expenses = snapshot_payload.get("total_expenses", expenses)
+            operational = snapshot_payload.get("operational_expenses", operational)
+            rent = snapshot_payload.get("rent_expenses", rent)
+            payroll = snapshot_payload.get("payroll_commission", payroll)
+        elif str(role) == UserRole.MANAGER:
+            expenses = snapshot_payload.get("operational_expenses", operational)
+            operational = expenses
 
     row: dict[str, Any] = {
         "id": str(fm.id),
@@ -331,18 +342,44 @@ def serialize_month_row(
         "closed_at": fm.closed_at.isoformat() if fm.closed_at else None,
         "grace_ends_at": fm.grace_ends_at.isoformat() if fm.grace_ends_at else None,
         "locked_at": fm.paid_locked_at.isoformat() if fm.paid_locked_at else None,
-        "expense_sources": expense_sources,
         "total_revenue": revenue,
-        "total_expenses": expenses,
-        "net_profit": live["net_profit"] if str(role) == UserRole.ADMIN else None,
-        "snapshot": snapshot_payload,
     }
-    if str(role) != UserRole.ADMIN:
-        row.pop("net_profit", None)
-        if snapshot_payload and str(role) == UserRole.MANAGER:
-            row["snapshot"] = {
-                k: snapshot_payload[k]
-                for k in snapshot_payload
-                if k not in {"net_profit", "payroll_commission"}
+    role_key = str(role)
+    if role_key == UserRole.ADMIN:
+        row.update(
+            {
+                "expense_sources": expense_sources,
+                "total_expenses": expenses,
+                "operational_expenses": operational,
+                "rent_expenses": rent,
+                "payroll_commission": payroll,
+                "net_profit": snapshot_payload.get("net_profit", shaped["net_profit"])
+                if snapshot_payload
+                else shaped["net_profit"],
+                "snapshot": snapshot_payload,
             }
+        )
+    elif role_key == UserRole.MANAGER:
+        row.update(
+            {
+                "expense_sources": shaped["expense_sources"],
+                "total_expenses": expenses,
+                "operational_expenses": operational,
+                "snapshot": (
+                    {
+                        k: snapshot_payload[k]
+                        for k in snapshot_payload
+                        if k
+                        not in {
+                            "net_profit",
+                            "payroll_commission",
+                            "rent_expenses",
+                            "total_expenses",
+                        }
+                    }
+                    if snapshot_payload
+                    else None
+                ),
+            }
+        )
     return row

@@ -33,6 +33,7 @@ export type LedgerTransaction = {
     approvedAmount: number;
     history: { at: string; label: string; amount: number }[];
   };
+  comparisonStatus?: string;
 };
 
 export type ExpenseSourceBreakdown = {
@@ -50,6 +51,7 @@ export type FinancialSnapshot = {
   productSalesRevenue: number;
   totalExpenses: number;
   operationalExpenses: number;
+  rentExpenses: number;
   payrollCommission: number;
   netProfit: number;
   expenseSources: ExpenseSourceBreakdown;
@@ -102,8 +104,14 @@ export type BarberProfile = {
   commissionPct: number;
   salaryType: string;
   avatarUrl: string | null;
-  monthStats: { revenue: number; services: number; payout: number };
-  allTimeStats: { revenue: number; services: number; payout: number };
+  monthStats: {
+    revenue: number;
+    services: number;
+    payout: number;
+    approved?: number;
+    pending?: number;
+  };
+  allTimeStats: { revenue: number; services: number; payout: number; approved?: number };
 };
 
 export type TeamMemberProfile = BarberProfile & {

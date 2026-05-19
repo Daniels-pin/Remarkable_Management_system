@@ -12,13 +12,19 @@ from app.models.enums import UserRole
 from app.models.financial_month import FinancialMonth
 from app.schemas.financial_month import FinancialMonthCloseBody
 from app.schemas.operations import CommissionMarkPaidBody
-from app.services import commission_service, month_lifecycle_service, operations_analytics_service
+from app.services import commission_service, month_lifecycle_service
+from app.services.ledger_service import barber_month_revenue_buckets, barber_operational_month_keys
+from app.services.payroll_service import expected_month_payout
 
 router = APIRouter(prefix="/finance", tags=["finance"])
 
 
 def _run_lifecycle(db: Session) -> None:
     month_lifecycle_service.process_lifecycle_transitions(db)
+
+
+def _is_personal_finance_role(role: UserRole | str) -> bool:
+    return str(role) in (UserRole.BARBER, UserRole.STAFF)
 
 
 @router.get("/months/current")
@@ -31,6 +37,17 @@ def get_current_financial_month(
     open_month = month_lifecycle_service.get_open_financial_month(db)
     if open_month is None:
         return {"month": None}
+    if _is_personal_finance_role(actor.user.role):
+        return {
+            "month": _personal_month_row(
+                db,
+                user=actor.user,
+                year=open_month.year,
+                month=open_month.month,
+                financial_month=open_month,
+                is_current=True,
+            )
+        }
     return {
         "month": month_lifecycle_service.serialize_month_row(
             db, open_month, role=actor.user.role, is_current=True
@@ -46,8 +63,8 @@ def list_financial_months(
     require_barbershop_finance(actor.user)
     _run_lifecycle(db)
 
-    if actor.user.role == UserRole.BARBER:
-        return _barber_month_history(db, actor)
+    if _is_personal_finance_role(actor.user.role):
+        return _personal_earnings_month_history(db, actor)
 
     require_manager_or_admin(actor.user)
     open_month = month_lifecycle_service.get_open_financial_month(db)
@@ -69,59 +86,112 @@ def list_financial_months(
     return {"items": items}
 
 
-def _barber_month_history(db: Session, actor: ActorContext) -> dict:
-    from sqlalchemy import extract
-
-    from app.models.enums import LedgerEntryType, RecordLifecycleState
-    from app.models.ledger import LedgerEntry
-
-    pairs = (
-        db.query(
-            extract("year", LedgerEntry.business_date),
-            extract("month", LedgerEntry.business_date),
-        )
+def _personal_month_row(
+    db: Session,
+    *,
+    user,
+    year: int,
+    month: int,
+    financial_month: FinancialMonth | None,
+    is_current: bool,
+) -> dict:
+    """Single-month personal earnings payload for barbers and staff."""
+    stmt = (
+        db.query(MonthlyCommissionStatement)
         .filter(
-            LedgerEntry.employee_user_id == actor.user.id,
-            LedgerEntry.entry_type == LedgerEntryType.SERVICE,
-            LedgerEntry.record_lifecycle == RecordLifecycleState.ACTIVE,
-            LedgerEntry.business_date.isnot(None),
+            MonthlyCommissionStatement.user_id == user.id,
+            MonthlyCommissionStatement.financial_month_id == financial_month.id,
         )
-        .distinct()
-        .order_by(
-            extract("year", LedgerEntry.business_date).desc(),
-            extract("month", LedgerEntry.business_date).desc(),
-        )
-        .all()
+        .one_or_none()
+        if financial_month is not None
+        else None
     )
-    items = []
-    open_month = month_lifecycle_service.get_open_financial_month(db)
-    for year_raw, month_raw in pairs:
-        year, month = int(year_raw), int(month_raw)
-        fm = month_lifecycle_service.get_financial_month(db, year=year, month=month)
-        summary = operations_analytics_service.barber_month_summary(
-            db, barber_user_id=actor.user.id, year=year, month=month
+    buckets = barber_month_revenue_buckets(db, barber_user_id=user.id, year=year, month=month)
+    approved = buckets["approved_total"]
+    if stmt is not None:
+        approved = stmt.approved_service_revenue_total
+        earnings = stmt.commission_amount
+        payout_state = str(stmt.payout_state)
+        payout_payment_date = (
+            stmt.payout_payment_date.isoformat() if stmt.payout_payment_date else None
         )
+        payout_paid_by_label = stmt.payout_paid_by_label
+        payout_note = stmt.payout_note
+        statement_id = str(stmt.id)
+    else:
+        earnings = expected_month_payout(user, settled=approved)
+        payout_state = "unpaid"
+        payout_payment_date = None
+        payout_paid_by_label = None
+        payout_note = None
+        statement_id = None
+
+    inferred_state = "open"
+    if financial_month is not None:
+        inferred_state = str(financial_month.state)
+    else:
         today = month_lifecycle_service.calendar_today()
-        inferred_state = "open"
-        if fm is not None:
-            inferred_state = str(fm.state)
-        elif (year, month) < (today.year, today.month):
+        if (year, month) < (today.year, today.month):
             inferred_state = "locked"
 
+    return {
+        "id": str(financial_month.id) if financial_month else f"{year}-{month:02d}",
+        "year": year,
+        "month": month,
+        "state": inferred_state,
+        "is_current": is_current,
+        "closed_at": financial_month.closed_at.isoformat()
+        if financial_month and financial_month.closed_at
+        else None,
+        "grace_ends_at": financial_month.grace_ends_at.isoformat()
+        if financial_month and financial_month.grace_ends_at
+        else None,
+        "locked_at": financial_month.paid_locked_at.isoformat()
+        if financial_month and financial_month.paid_locked_at
+        else None,
+        "approved_total": str(approved),
+        "earnings_amount": str(earnings),
+        "commission_pct_at_close": str(stmt.commission_pct_at_close) if stmt else None,
+        "statement_id": statement_id,
+        "payout_state": payout_state,
+        "payout_payment_date": payout_payment_date,
+        "payout_paid_by_label": payout_paid_by_label,
+        "payout_note": payout_note,
+    }
+
+
+def _personal_earnings_month_history(db: Session, actor: ActorContext) -> dict:
+    user = actor.user
+    open_month = month_lifecycle_service.get_open_financial_month(db)
+    month_keys: set[tuple[int, int]] = set(
+        barber_operational_month_keys(db, barber_user_id=user.id)
+    )
+
+    stmt_rows = (
+        db.query(MonthlyCommissionStatement, FinancialMonth)
+        .join(FinancialMonth, FinancialMonth.id == MonthlyCommissionStatement.financial_month_id)
+        .filter(MonthlyCommissionStatement.user_id == user.id)
+        .all()
+    )
+    for _stmt, fm in stmt_rows:
+        month_keys.add((fm.year, fm.month))
+
+    items = []
+    for year, month in sorted(month_keys, reverse=True):
+        fm = month_lifecycle_service.get_financial_month(db, year=year, month=month)
         items.append(
-            {
-                **summary,
-                "id": str(fm.id) if fm else f"{year}-{month:02d}",
-                "state": inferred_state,
-                "is_current": open_month is not None
+            _personal_month_row(
+                db,
+                user=user,
+                year=year,
+                month=month,
+                financial_month=fm,
+                is_current=open_month is not None
                 and fm is not None
                 and fm.id == open_month.id,
-                "closed_at": fm.closed_at.isoformat() if fm and fm.closed_at else None,
-                "grace_ends_at": fm.grace_ends_at.isoformat() if fm and fm.grace_ends_at else None,
-                "locked_at": fm.paid_locked_at.isoformat() if fm and fm.paid_locked_at else None,
-            }
+            )
         )
-    return {"items": items, "note": "Your historical monthly service records."}
+    return {"items": items, "note": "Your commission and salary statement history."}
 
 
 @router.post("/months/{month_id}/close")
@@ -153,11 +223,9 @@ def list_commission_statements(
 ) -> dict:
     require_barbershop_finance(actor.user)
     q = db.query(MonthlyCommissionStatement)
-    if actor.user.role == UserRole.BARBER:
+    if _is_personal_finance_role(actor.user.role):
         q = q.filter(MonthlyCommissionStatement.user_id == actor.user.id)
-    elif actor.user.role in (UserRole.MANAGER, UserRole.ADMIN):
-        pass
-    else:
+    elif actor.user.role not in (UserRole.MANAGER, UserRole.ADMIN):
         return {"items": [], "note": "No finance visibility for this role."}
     rows = q.order_by(MonthlyCommissionStatement.calculated_at.desc()).limit(500).all()
     return {

@@ -10,11 +10,13 @@ import { ServiceTypeSelect } from "@/components/ops/service-type-select";
 import {
   ApiError,
   createBarbershopLedgerEntry,
-  listDirectoryBarbers,
+  listDirectoryTeam,
   listExpenseCategories,
+  listPendingReconciliationIndexes,
   listSaleCategories,
   listServiceTypes,
   type CategoryItem,
+  type PendingReconciliationIndex,
   type ServiceTypeItem,
 } from "@/lib/api";
 import {
@@ -82,7 +84,7 @@ export function AddEntryFab({
   const [serviceTypes, setServiceTypes] = React.useState<ServiceTypeItem[]>([]);
   const [saleCategories, setSaleCategories] = React.useState<CategoryItem[]>([]);
   const [expenseCategories, setExpenseCategories] = React.useState<CategoryItem[]>([]);
-  const [barbers, setBarbers] = React.useState<{ id: string; name: string }[]>([]);
+  const [teamMembers, setTeamMembers] = React.useState<{ id: string; name: string }[]>([]);
 
   const [serviceTypeId, setServiceTypeId] = React.useState("");
   const [employeeId, setEmployeeId] = React.useState("");
@@ -92,6 +94,10 @@ export function AddEntryFab({
   const [expensePaymentSource, setExpensePaymentSource] =
     React.useState<ExpensePaymentSource>("cash_shop");
   const [note, setNote] = React.useState("");
+  const [businessDate, setBusinessDate] = React.useState(() =>
+    new Date().toISOString().slice(0, 10),
+  );
+  const [pendingIndexes, setPendingIndexes] = React.useState<PendingReconciliationIndex[]>([]);
 
   const [saleCategoryId, setSaleCategoryId] = React.useState("");
   const [expenseCategoryId, setExpenseCategoryId] = React.useState("");
@@ -103,21 +109,21 @@ export function AddEntryFab({
         listServiceTypes(),
         listSaleCategories(),
         listExpenseCategories(),
-        listDirectoryBarbers(),
+        listDirectoryTeam(),
       ]);
 
       const svcItems = svc.items;
       const saleItems = sales.items;
       const expItems = exp.items;
-      const barberItems = roster.items.map((b) => ({
-        id: b.id,
-        name: b.full_name?.trim() || `@${b.username}`,
+      const memberItems = roster.items.map((m) => ({
+        id: m.id,
+        name: m.full_name?.trim() || `@${m.username}`,
       }));
 
       setServiceTypes(svcItems);
       setSaleCategories(saleItems);
       setExpenseCategories(expItems);
-      setBarbers(barberItems);
+      setTeamMembers(memberItems);
 
       const firstActive = svcItems.find((s) => s.status === "active");
       const firstSale = saleItems.find((s) => s.status === "active");
@@ -125,7 +131,7 @@ export function AddEntryFab({
       setServiceTypeId((prev) => prev || firstActive?.id || "");
       setSaleCategoryId((prev) => prev || firstSale?.id || "");
       setExpenseCategoryId((prev) => prev || firstExpense?.id || "");
-      setEmployeeId((prev) => prev || barberItems[0]?.id || "");
+      setEmployeeId((prev) => prev || memberItems[0]?.id || "");
     } catch (e) {
       if (e instanceof ApiError) toast.error(e.message);
       else toast.error("Could not load entry forms.");
@@ -145,16 +151,37 @@ export function AddEntryFab({
     });
   }, [open, hydrate]);
 
+  React.useEffect(() => {
+    if (!open || kind !== "service" || !employeeId || !businessDate) {
+      setPendingIndexes([]);
+      return;
+    }
+    let cancelled = false;
+    void listPendingReconciliationIndexes(employeeId, businessDate)
+      .then((res) => {
+        if (cancelled) return;
+        setPendingIndexes(res.items);
+      })
+      .catch(() => {
+        if (!cancelled) setPendingIndexes([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, kind, employeeId, businessDate]);
+
   function reset() {
     setAmount("");
     setNote("");
     setKind(entryType ?? "service");
     setServiceTypeId(serviceTypes.find((s) => s.status === "active")?.id ?? "");
-    setEmployeeId(barbers[0]?.id ?? "");
+    setEmployeeId(teamMembers[0]?.id ?? "");
     setPaymentMethod("cash");
     setExpensePaymentSource("cash_shop");
     setSaleCategoryId(saleCategories.find((s) => s.status === "active")?.id ?? "");
     setExpenseCategoryId(expenseCategories.find((s) => s.status === "active")?.id ?? "");
+    setBusinessDate(new Date().toISOString().slice(0, 10));
+    setPendingIndexes([]);
   }
 
   async function submit(e: React.FormEvent) {
@@ -171,7 +198,7 @@ export function AddEntryFab({
         return;
       }
       if (!employeeId) {
-        toast.error("Pick a barber for this service line.");
+        toast.error("Pick a team member for this service line.");
         return;
       }
     }
@@ -190,7 +217,7 @@ export function AddEntryFab({
       const noteValue = note.trim() || null;
 
       if (kind === "service") {
-        await createBarbershopLedgerEntry({
+        const body: Record<string, unknown> = {
           entry_type: "service",
           occurred_at,
           amount: n,
@@ -198,7 +225,8 @@ export function AddEntryFab({
           note: noteValue,
           service_type_id: serviceTypeId,
           employee_user_id: employeeId,
-        });
+        };
+        await createBarbershopLedgerEntry(body);
       } else if (kind === "sale") {
         await createBarbershopLedgerEntry({
           entry_type: "sale",
@@ -317,17 +345,17 @@ export function AddEntryFab({
                     label="Service"
                   />
                   <div className="space-y-1.5">
-                    <Label>Barber</Label>
+                    <Label>Team member</Label>
                     <select
                       value={employeeId}
                       onChange={(e) => setEmployeeId(e.target.value)}
                       className="flex h-10 w-full rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--input-bg)] px-3 text-sm"
                       disabled={catalogLoading}
                     >
-                      {barbers.length === 0 ? (
-                        <option value="">No barbers in directory yet</option>
+                      {teamMembers.length === 0 ? (
+                        <option value="">No team members in directory yet</option>
                       ) : (
-                        barbers.map((em) => (
+                        teamMembers.map((em) => (
                           <option key={em.id} value={em.id}>
                             {em.name}
                           </option>
@@ -335,6 +363,35 @@ export function AddEntryFab({
                       )}
                     </select>
                   </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="biz-day">Business day</Label>
+                    <Input
+                      id="biz-day"
+                      type="date"
+                      value={businessDate}
+                      onChange={(e) => setBusinessDate(e.target.value)}
+                      className="h-10"
+                    />
+                  </div>
+                  <p className="text-xs leading-relaxed text-[var(--muted-foreground)]">
+                    Records an independent manager index for this team member. It is compared to
+                    their employee stream by index position — it does not modify employee submissions.
+                  </p>
+                  {pendingIndexes.length > 0 ? (
+                    <div className="rounded-[var(--radius-md)] border border-dashed border-[var(--border)] bg-[var(--muted)]/20 px-3 py-2">
+                      <p className="text-[10px] font-medium uppercase tracking-wider text-[var(--muted-foreground)]">
+                        Employee indexes awaiting manager record
+                      </p>
+                      <ul className="mt-1 space-y-0.5 text-xs text-[var(--foreground)]">
+                        {pendingIndexes.slice(0, 5).map((p) => (
+                          <li key={p.entry_id}>
+                            {p.index_label} · {p.service_name} · ₦
+                            {Number(p.employee_amount).toLocaleString("en-NG")}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
                 </>
               ) : null}
 

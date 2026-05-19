@@ -28,7 +28,8 @@ def operations_summary(
             "Managers may only view today, week, or month summaries.",
             code="MANAGER_PRESET_FORBIDDEN",
         )
-    start, end = operations_analytics_service.preset_date_range(
+    start, end = operations_analytics_service.snapshot_time_bounds(
+        db,
         preset,
         custom_from=from_date,
         custom_to=to_date,

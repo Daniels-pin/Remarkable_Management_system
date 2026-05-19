@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import date
 from uuid import UUID
 
+from app.models.catalog import ServiceType
+
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import joinedload
 from sqlalchemy.orm import Session
@@ -47,10 +49,10 @@ def manager_diff(
     issues = ledger_service.compute_index_reconciliation_issues(
         db, barber_user_id=barber_user_id, business_day=business_day
     )
-    rows, total = ledger_service.list_barber_day_entries(
+    items, total = ledger_service.list_barber_day_reconciliation(
         db, barber_user_id=barber_user_id, business_day=business_day, page=1, page_size=500
     )
-    return {"issues": issues, "total_entries": total, "items": [_ledger_row(r) for r in rows]}
+    return {"issues": issues, "total_entries": total, "items": items}
 
 
 @router.post("/day/{barber_user_id}/{business_day}/propose")
@@ -122,6 +124,41 @@ def manager_official_line(
     return _ledger_row(row)
 
 
+@router.get("/day/{barber_user_id}/{business_day}/pending-indexes")
+def pending_reconciliation_indexes(
+    barber_user_id: UUID,
+    business_day: date,
+    db: Session = Depends(get_db),
+    _: ActorContext = Depends(get_manager_or_admin_actor),
+) -> dict:
+    """Employee-submitted indexes awaiting manager reconciliation for a business day."""
+    rows = ledger_service.list_pending_reconciliation_entries(
+        db, barber_user_id=barber_user_id, business_day=business_day
+    )
+    type_ids = {r.service_type_id for r in rows if r.service_type_id}
+    names: dict[UUID, str] = {}
+    if type_ids:
+        for st in db.query(ServiceType).filter(ServiceType.id.in_(type_ids)).all():
+            names[st.id] = st.name
+    return {
+        "business_date": business_day.isoformat(),
+        "items": [
+            {
+                "entry_id": str(r.id),
+                "barber_sequence_index": r.barber_sequence_index,
+                "index_label": f"#{r.barber_sequence_index:03d}"
+                if r.barber_sequence_index
+                else None,
+                "service_type_id": str(r.service_type_id) if r.service_type_id else None,
+                "service_name": names.get(r.service_type_id) if r.service_type_id else "Service",
+                "employee_amount": str(r.original_barber_amount or r.amount),
+                "occurred_at": r.occurred_at.isoformat(),
+            }
+            for r in rows
+        ],
+    }
+
+
 @router.get("/queue")
 def reconciliation_queue(
     db: Session = Depends(get_db),
@@ -183,7 +220,7 @@ def manager_day_detail(
     issues = ledger_service.compute_index_reconciliation_issues(
         db, barber_user_id=barber_user_id, business_day=business_day
     )
-    entries, total = ledger_service.list_barber_day_entries(
+    entries, total = ledger_service.list_barber_day_reconciliation(
         db, barber_user_id=barber_user_id, business_day=business_day, page=1, page_size=500
     )
     timeline = (
@@ -207,7 +244,7 @@ def manager_day_detail(
         },
         "issues": issues,
         "total_entries": total,
-        "items": [_ledger_row(r) for r in entries],
+        "items": entries,
         "timeline": [
             {
                 "event_type": str(t.event_type),

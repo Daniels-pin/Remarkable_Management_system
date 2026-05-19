@@ -34,6 +34,16 @@ export function formatTimeLabel(iso: string) {
   });
 }
 
+/** Compact HH:mm for dense operational tables. */
+export function formatTimeShort(iso: string) {
+  const d = new Date(iso);
+  return d.toLocaleTimeString("en-NG", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
 /** Short date for catalog management rows (e.g. 12 May 2026). */
 export function formatCatalogDate(iso: string | null | undefined) {
   if (!iso) return null;

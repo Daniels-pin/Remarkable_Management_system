@@ -16,3 +16,8 @@ export function isManagerUp(role: UserRole | undefined): boolean {
 export function isServiceProvider(role: UserRole | undefined): boolean {
   return role === "barber" || role === "staff";
 }
+
+/** Personal commission/salary statement archive only — no shop-wide finance. */
+export function isPersonalFinanceRole(role: UserRole | undefined): boolean {
+  return role === "barber" || role === "staff";
+}

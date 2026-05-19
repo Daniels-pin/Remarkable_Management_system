@@ -113,7 +113,7 @@ export function ManagerOperationsDashboard() {
             label="Operational expenses"
             value={formatNaira(operationalExpenses)}
             tone="negative"
-            hint="Fuel, rent, supplies — excludes salary & commission"
+            hint="Fuel, supplies, utilities — excludes rent, salary & commission"
           />
         </div>
       </section>

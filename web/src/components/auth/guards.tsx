@@ -110,7 +110,7 @@ export function RequireManagerOrAdmin({ children }: { children: React.ReactNode 
   return <>{children}</>;
 }
 
-/** Finance archive and commission history — barbers and management only. */
+/** Finance — personal earnings for barbers/staff; shop finance for management. */
 export function RequireBarbershopFinance({ children }: { children: React.ReactNode }) {
   const { session, loading } = useAuth();
   const router = useRouter();

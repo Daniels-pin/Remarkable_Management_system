@@ -10,9 +10,18 @@ export function canAccessBarbershopUsers(role: UserRole | undefined): boolean {
   return role === "admin";
 }
 
-/** Finance archive, commission history, and monthly financial breakdowns. */
+/** Finance — personal earnings for barbers/staff; operational or full for management. */
 export function canAccessBarbershopFinance(role: UserRole | undefined): boolean {
-  return role === "admin" || role === "manager" || role === "barber";
+  return (
+    role === "admin" ||
+    role === "manager" ||
+    role === "barber" ||
+    role === "staff"
+  );
+}
+
+export function isPersonalFinanceRole(role: UserRole | undefined): boolean {
+  return role === "barber" || role === "staff";
 }
 
 /** Where to send barber/staff when they hit a management-only route. */

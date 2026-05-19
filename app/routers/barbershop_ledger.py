@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.auth.rbac import require_manager_or_admin
 from app.core.deps import ActorContext, get_actor_context, get_db
 from app.models.catalog import ExpenseCategory, SaleCategory, ServiceType
-from app.models.enums import LedgerEntryType, RecordLifecycleState, UserRole
+from app.models.enums import LedgerEntryType, LedgerRecordStream, RecordLifecycleState, UserRole
 from app.models.ledger import LedgerEntry
 from app.models.user import User
 from app.schemas.ledger import (
@@ -35,22 +35,37 @@ def _employee_label(db: Session, user_id: uuid.UUID | None) -> str | None:
     return f"@{u.username}"
 
 
-def _enrich_row(db: Session, r: LedgerEntry) -> dict:
+def _enrich_row(
+    db: Session,
+    r: LedgerEntry,
+    *,
+    comparison_status: str | None = None,
+) -> dict:
     service = db.get(ServiceType, r.service_type_id) if r.service_type_id else None
     sale = db.get(SaleCategory, r.sale_category_id) if r.sale_category_id else None
     expense = db.get(ExpenseCategory, r.expense_category_id) if r.expense_category_id else None
+    display_amount = (
+        ledger_service.official_service_amount(r)
+        if r.entry_type == LedgerEntryType.SERVICE
+        else r.amount
+    )
+    if comparison_status is None:
+        comparison_status = ledger_service.comparison_status_for_service_row(db, r)
     return {
         "id": str(r.id),
         "entry_type": str(r.entry_type),
         "occurred_at": r.occurred_at.isoformat(),
         "business_date": r.business_date.isoformat() if r.business_date else None,
-        "amount": str(r.amount),
+        "amount": str(display_amount),
+        "record_stream": str(r.record_stream) if r.record_stream else None,
+        "comparison_status": comparison_status,
         "payment_method": str(r.payment_method) if r.payment_method else None,
         "note": r.note,
         "employee_user_id": str(r.employee_user_id) if r.employee_user_id else None,
         "employee_label": _employee_label(db, r.employee_user_id),
         "barber_sequence_index": r.barber_sequence_index,
         "reconciliation_status": str(r.reconciliation_status) if r.reconciliation_status else None,
+        "is_manager_created_without_barber": r.is_manager_created_without_barber,
         "service_type": {"id": str(service.id), "name": service.name} if service else None,
         "sale_category": {"id": str(sale.id), "name": sale.name} if sale else None,
         "expense_category": {"id": str(expense.id), "name": expense.name} if expense else None,
@@ -63,14 +78,32 @@ def list_ledger(
     db: Session = Depends(get_db),
     actor: ActorContext = Depends(get_actor_context),
 ) -> dict:
-    q = db.query(LedgerEntry).filter(LedgerEntry.record_lifecycle == RecordLifecycleState.ACTIVE)
     if actor.user.role in (UserRole.BARBER, UserRole.STAFF):
-        q = q.filter(
-            LedgerEntry.entry_type == LedgerEntryType.SERVICE,
-            LedgerEntry.employee_user_id == actor.user.id,
+        rows = (
+            db.query(LedgerEntry)
+            .filter(
+                LedgerEntry.record_lifecycle == RecordLifecycleState.ACTIVE,
+                LedgerEntry.entry_type == LedgerEntryType.SERVICE,
+                LedgerEntry.employee_user_id == actor.user.id,
+                LedgerEntry.record_stream == LedgerRecordStream.EMPLOYEE,
+            )
+            .order_by(
+                LedgerEntry.business_date.desc(),
+                LedgerEntry.barber_sequence_index.asc().nulls_last(),
+            )
+            .limit(200)
+            .all()
         )
-    rows = q.order_by(LedgerEntry.occurred_at.desc()).limit(200).all()
-    return {"items": [_enrich_row(db, r) for r in rows]}
+    else:
+        rows = ledger_service.list_manager_official_timeline(db, limit=200)
+
+    comparison_by_id = ledger_service.comparison_status_map_for_rows(db, rows)
+    return {
+        "items": [
+            _enrich_row(db, r, comparison_status=comparison_by_id.get(r.id))
+            for r in rows
+        ],
+    }
 
 
 @router.post("")
