@@ -20,8 +20,13 @@ from app.services.ledger_service import (
     barber_operational_month_keys,
     operational_months_in_range,
 )
-
-_ZERO = Decimal("0")
+from app.services.attendance_service import (
+    attendance_start_date_for,
+    is_attendance_subject,
+    month_deduction_summary,
+    process_absences_for_user,
+    resolve_attendance_start_date,
+)
 
 
 def expected_month_payout(
@@ -38,6 +43,70 @@ def expected_month_payout(
     if user.salary_type == SalaryType.FIXED_OR_COMMISSION and user.fixed_salary is not None:
         return max(Decimal(user.fixed_salary), commission_amount)
     return commission_amount
+
+_ZERO = Decimal("0")
+
+
+def net_month_payout(
+    db: Session,
+    user: User,
+    *,
+    settled: Decimal,
+    year: int,
+    month: int,
+    commission_pct: Decimal | None = None,
+) -> Decimal:
+    """Expected payout minus attendance deductions for the month."""
+    gross = expected_month_payout(user, settled=settled, commission_pct=commission_pct)
+    summary = month_deduction_summary(db, user_id=user.id, year=year, month=month)
+    deductions = Decimal(summary["total_deductions"])
+    return max(gross - deductions, _ZERO)
+
+
+def month_payout_breakdown(
+    db: Session,
+    user: User,
+    *,
+    year: int,
+    month: int,
+    settled: Decimal | None = None,
+    commission_pct: Decimal | None = None,
+    sync_absences: bool = True,
+) -> tuple[dict, int]:
+    """
+    Live expected vs actual payout for a calendar month, including attendance penalties.
+
+    Returns (payload, absences_synced) where absences_synced is the number of new
+    absence rows created when sync_absences is True (callers may commit when > 0).
+    """
+    absences_synced = 0
+    if sync_absences:
+        absences_synced = process_absences_for_user(db, user)
+
+    activation_backfilled = False
+    if is_attendance_subject(user):
+        start_before = attendance_start_date_for(user)
+        resolve_attendance_start_date(db, user, persist=True)
+        activation_backfilled = start_before is None and attendance_start_date_for(user) is not None
+
+    if settled is None:
+        buckets = barber_month_revenue_buckets(db, barber_user_id=user.id, year=year, month=month)
+        settled = buckets["approved_total"]
+
+    pct = commission_pct if commission_pct is not None else (user.commission_pct or _ZERO)
+    expected = expected_month_payout(user, settled=settled, commission_pct=pct)
+    attendance_summary = month_deduction_summary(db, user_id=user.id, year=year, month=month)
+    deductions = Decimal(attendance_summary["total_deductions"])
+    actual = max(expected - deductions, _ZERO)
+
+    payload = {
+        "expected_payout_on_approved": str(expected),
+        "actual_payout_on_approved": str(actual),
+        "attendance_deductions_total": attendance_summary["total_deductions"],
+        "attendance_late_deductions_total": attendance_summary["late_deductions_total"],
+        "attendance_absence_deductions_total": attendance_summary["absence_deductions_total"],
+    }
+    return payload, absences_synced + (1 if activation_backfilled else 0)
 
 
 def barber_all_time_approved_total(db: Session, *, barber_user_id) -> Decimal:
@@ -80,15 +149,12 @@ def barber_all_time_expected_payout(db: Session, *, user: User) -> Decimal:
 
 
 def _month_member_obligation(db: Session, user: User, *, year: int, month: int) -> Decimal:
-    if user.role == UserRole.BARBER:
-        buckets = barber_month_revenue_buckets(db, barber_user_id=user.id, year=year, month=month)
-        return expected_month_payout(user, settled=buckets["approved_total"])
-    if user.role == UserRole.STAFF:
-        if user.salary_type in (SalaryType.FIXED, SalaryType.FIXED_OR_COMMISSION) and user.fixed_salary:
-            return Decimal(user.fixed_salary)
-        buckets = barber_month_revenue_buckets(db, barber_user_id=user.id, year=year, month=month)
-        return expected_month_payout(user, settled=buckets["approved_total"])
-    return _ZERO
+    """Net payroll obligation for a team member in one month (after attendance penalties)."""
+    if user.role not in (UserRole.BARBER, UserRole.STAFF):
+        return _ZERO
+    buckets = barber_month_revenue_buckets(db, barber_user_id=user.id, year=year, month=month)
+    process_absences_for_user(db, user)
+    return net_month_payout(db, user, settled=buckets["approved_total"], year=year, month=month)
 
 
 def _team_members_for_payroll_period(

@@ -6,6 +6,8 @@ import * as React from "react";
 import { toast } from "sonner";
 
 import { TeamMemberProfileView } from "@/components/ops/barber-profile-view";
+import { AttendanceHistoryPanel } from "@/components/ops/attendance-history-panel";
+import { AttendanceOffDaysEditor } from "@/components/ops/attendance-off-days-editor";
 import { OperationalHistorySection } from "@/components/ops/operational-history-section";
 import { ManagerTeamMemberSummary } from "@/components/ops/manager-team-member-summary";
 import {
@@ -20,15 +22,20 @@ import {
   type ReconciliationPosture,
   getDirectoryTeamMember,
   getDirectoryTeamMemberMonthStats,
+  getUserAttendanceHistory,
   listCommissionStatements,
 } from "@/lib/api";
 import { formatNaira } from "@/lib/format";
+import { normalizePayoutBreakdown, resolveActualPayout } from "@/lib/payout";
+import { subscribePayoutUpdated } from "@/lib/payout-events";
 import { isAdmin } from "@/lib/roles";
+import type { PayoutAttendanceBreakdown } from "@/components/ops/payout-with-attendance";
 import type { TeamMemberProfile } from "@/lib/ops-types";
 
 type TeamProfileVM = TeamMemberProfile & {
   reconciliationPosture: ReconciliationPosture;
   monthPosture: MonthPostureData;
+  monthPayoutBreakdown?: PayoutAttendanceBreakdown;
 };
 
 export default function TeamMemberDetailPage() {
@@ -67,6 +74,14 @@ export default function TeamMemberDetailPage() {
 
       const commissionPct = m.commission_pct ? Number(m.commission_pct) : 0;
       const expectedPayout = Number(monthStats.expected_payout_on_approved ?? 0);
+      const deductionsTotal = Number(monthStats.attendance_deductions_total ?? 0);
+      const actualPayout = resolveActualPayout(
+        expectedPayout,
+        monthStats.actual_payout_on_approved != null
+          ? Number(monthStats.actual_payout_on_approved)
+          : null,
+        deductionsTotal,
+      );
 
       setProfile({
         id: m.id,
@@ -87,8 +102,17 @@ export default function TeamMemberDetailPage() {
           services: Number(monthStats.current_month_services_count ?? 0),
           approved: Number(monthStats.approved_total ?? 0),
           pending: Number(monthStats.pending_total ?? 0),
-          payout: adminView ? expectedPayout : 0,
+          payout: adminView ? actualPayout : 0,
         },
+        monthPayoutBreakdown: adminView
+          ? normalizePayoutBreakdown({
+              expectedPayout,
+              actualPayout,
+              attendanceDeductionsTotal: deductionsTotal,
+              lateDeductionsTotal: Number(monthStats.attendance_late_deductions_total ?? 0),
+              absenceDeductionsTotal: Number(monthStats.attendance_absence_deductions_total ?? 0),
+            })
+          : undefined,
         allTimeStats: {
           revenue: Number(monthStats.all_time_gross_recorded ?? 0),
           services: Number(monthStats.all_time_services_count ?? 0),
@@ -114,6 +138,8 @@ export default function TeamMemberDetailPage() {
   React.useEffect(() => {
     queueMicrotask(() => void load());
   }, [load]);
+
+  React.useEffect(() => subscribePayoutUpdated(() => void load()), [load]);
 
   if (!profile && !loading) {
     return (
@@ -199,6 +225,8 @@ function ManagerTeamMemberBody({
         managerColumnLabel="Manager record"
         className="border-t border-[var(--border)]/60 pt-12"
       />
+
+      <AttendanceHistoryPanel managementMode showSummary title="Attendance" userId={memberId} />
     </div>
   );
 }
@@ -211,13 +239,20 @@ function AdminTeamMemberBody({
   memberId: string;
 }) {
   const [statements, setStatements] = React.useState<CommissionStatementRow[]>([]);
+  const [offDays, setOffDays] = React.useState<number[]>([]);
+  const [attendanceStartDate, setAttendanceStartDate] = React.useState<string | null>(null);
 
   const loadAdminSections = React.useCallback(async () => {
     try {
-      const commissionRes = await listCommissionStatements();
+      const [commissionRes, attendanceRes] = await Promise.all([
+        listCommissionStatements(),
+        getUserAttendanceHistory(memberId, { page: 1, page_size: 1 }),
+      ]);
       setStatements(
         (commissionRes.items ?? []).filter((s) => String(s.user_id) === String(memberId)),
       );
+      setOffDays(attendanceRes.user.attendance_off_days ?? []);
+      setAttendanceStartDate(attendanceRes.user.attendance_start_date ?? null);
     } catch (e) {
       if (e instanceof ApiError) toast.error(e.message);
     }
@@ -237,9 +272,24 @@ function AdminTeamMemberBody({
 
   return (
     <div className="space-y-12">
-      <TeamMemberProfileView profile={profile} variant="full" />
+      <TeamMemberProfileView
+        profile={profile}
+        variant="full"
+        monthPayoutBreakdown={profile.monthPayoutBreakdown}
+      />
       <OperationalPostureSection profile={profile} />
 
+      <AttendanceOffDaysEditor
+        attendanceStartDate={attendanceStartDate}
+        initialOffDays={offDays}
+        userId={memberId}
+        onSaved={(days, start) => {
+          setOffDays(days);
+          setAttendanceStartDate(start);
+        }}
+      />
+
+      <AttendanceHistoryPanel managementMode showSummary title="Attendance" userId={memberId} />
 
       {(profile.role === "barber" || payouts.length > 0) && (
         <section className="space-y-4">

@@ -39,6 +39,11 @@ def require_barbershop_finance(user: User) -> None:
     require_roles(user, UserRole.ADMIN, UserRole.MANAGER, UserRole.BARBER, UserRole.STAFF)
 
 
+def require_attendance_participant(user: User) -> None:
+    """Barbers, staff, and managers who must sign daily attendance."""
+    require_roles(user, UserRole.BARBER, UserRole.STAFF, UserRole.MANAGER)
+
+
 def can_impersonate(admin: User) -> bool:
     return admin.role == UserRole.ADMIN
 

@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Query
 from app.core.deps import ActorContext, get_db, get_manager_or_admin_actor
 from app.core.exceptions import ValidationAppError
 from app.models.enums import UserRole
-from app.services import operations_analytics_service
+from app.services import attendance_service, operations_analytics_service
 from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/barbershop/analytics", tags=["barbershop"])
@@ -28,6 +28,8 @@ def operations_summary(
             "Managers may only view today, week, or month summaries.",
             code="MANAGER_PRESET_FORBIDDEN",
         )
+    if attendance_service.reconcile_all_attendance(db):
+        db.commit()
     start, end = operations_analytics_service.snapshot_time_bounds(
         db,
         preset,

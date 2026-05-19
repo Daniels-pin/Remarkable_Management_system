@@ -57,6 +57,33 @@ def _day_manager_entries(
     return ledger_service.day_manager_stream_entries(db, barber_user_id, business_day)
 
 
+def refresh_daily_summary_totals_from_ledger(
+    db: Session,
+    *,
+    barber_user_id: uuid.UUID,
+    business_day: date,
+) -> BarberDailySummary | None:
+    """Recompute cached day totals from active (non-voided) stream entries."""
+    summary = (
+        db.query(BarberDailySummary)
+        .filter(
+            BarberDailySummary.barber_user_id == barber_user_id,
+            BarberDailySummary.business_date == business_day,
+        )
+        .one_or_none()
+    )
+    if summary is None:
+        return None
+
+    employee_entries = _day_employee_entries(db, barber_user_id, business_day)
+    manager_entries = _day_manager_entries(db, barber_user_id, business_day)
+    summary.total_original_barber = sum((e.amount for e in employee_entries), Decimal("0"))
+    summary.total_manager_approved = sum((m.amount for m in manager_entries), Decimal("0"))
+    db.add(summary)
+    db.flush()
+    return summary
+
+
 def _apply_status_to_day_streams(
     db: Session,
     *,

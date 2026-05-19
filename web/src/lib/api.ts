@@ -190,6 +190,14 @@ export type ExpenseSourcesRow = {
 
 export type FinancialMonthState = "open" | "grace_period" | "locked";
 
+export type AttendanceDeductionItem = {
+  business_date: string;
+  status: string;
+  deduction_amount: string;
+  deduction_reason: string | null;
+  signed_in_at: string | null;
+};
+
 export type FinancialMonthRow = {
   id: string;
   year: number;
@@ -216,6 +224,11 @@ export type FinancialMonthRow = {
   payout_payment_date?: string | null;
   payout_paid_by_label?: string | null;
   payout_note?: string | null;
+  attendance_deductions_total?: string;
+  attendance_late_deductions_total?: string;
+  attendance_absence_deductions_total?: string;
+  attendance_deduction_items?: AttendanceDeductionItem[];
+  net_earnings_amount?: string;
 };
 
 export type OperationsSummaryResponse = {
@@ -416,12 +429,22 @@ export type DirectoryBarberRow = {
 
 export type ReconciliationPosture = "clear" | "pending" | "approved" | "mismatch";
 
+export type MonthPayoutBreakdown = {
+  expected_payout_on_approved: string;
+  actual_payout_on_approved: string;
+  attendance_deductions_total: string;
+  attendance_late_deductions_total?: string;
+  attendance_absence_deductions_total?: string;
+};
+
 export type DirectoryTeamRow = DirectoryBarberRow & {
   role: "barber" | "staff";
   fixed_salary?: string | null;
   current_month_revenue: string;
   current_month_services_count: number;
   expected_payout?: string;
+  actual_payout?: string;
+  attendance_deductions_total?: string;
   reconciliation_posture: ReconciliationPosture;
 };
 
@@ -447,6 +470,7 @@ export type LedgerRow = {
   employee_user_id: string | null;
   employee_label: string | null;
   barber_sequence_index: number | null;
+  index_label?: string | null;
   reconciliation_status:
     | "pending"
     | "approved"
@@ -466,10 +490,76 @@ export type LedgerRow = {
   sale_category: { id: string; name: string } | null;
   expense_category: { id: string; name: string } | null;
   record_lifecycle: "active" | "deleted" | "purged";
+  is_voided?: boolean;
+  void_reason?: string | null;
+  voided_at?: string | null;
+  voided_by_user_id?: string | null;
+  voided_by_label?: string | null;
+  pending_void_reason?: string | null;
+  pending_void_by_user_id?: string | null;
+  pending_void_by_label?: string | null;
+  pending_void_requested_at?: string | null;
+  original_amount?: string | null;
+};
+
+export type PendingVoidRequest = {
+  entry_id: string;
+  index: number;
+  index_label: string | null;
+  service_name: string;
+  amount: string;
+  manager_amount: string | null;
+  pending_void_reason: string | null;
+  pending_void_by_user_id: string | null;
+  pending_void_by_label: string | null;
+  pending_void_requested_at: string | null;
+  business_date: string | null;
 };
 
 export function listBarbershopLedger() {
   return apiFetch<{ items: LedgerRow[] }>("/api/v1/barbershop/ledger");
+}
+
+export type ReconciliationInboxRow = ReconciliationWorkspaceRow & {
+  employee_user_id?: string | null;
+  employee_name?: string | null;
+  entry_type?: "service";
+};
+
+export function listReconciliationInbox(filter: "pending" | "mismatch") {
+  return apiFetch<{ filter: string; items: ReconciliationInboxRow[]; total: number }>(
+    `/api/v1/barbershop/ledger/reconciliation-inbox?filter=${filter}`,
+  );
+}
+
+export function matchPendingLedgerEntry(
+  employeeEntryId: string,
+  paymentMethod: "cash" | "transfer" | "pos",
+) {
+  return apiFetch<LedgerRow>(`/api/v1/barbershop/ledger/match/${employeeEntryId}`, {
+    method: "POST",
+    body: JSON.stringify({ payment_method: paymentMethod }),
+  });
+}
+
+export function matchAllPendingLedgerEntries(paymentMethod: "cash" | "transfer" | "pos") {
+  return apiFetch<{ matched_count: number; items: LedgerRow[] }>(
+    "/api/v1/barbershop/ledger/match-all",
+    {
+      method: "POST",
+      body: JSON.stringify({ payment_method: paymentMethod }),
+    },
+  );
+}
+
+export function resolveMismatchUseEmployeeAmount(employeeEntryId: string) {
+  return apiFetch<{ employee: LedgerRow; manager: LedgerRow }>(
+    "/api/v1/barbershop/ledger/mismatch/resolve",
+    {
+      method: "POST",
+      body: JSON.stringify({ employee_entry_id: employeeEntryId }),
+    },
+  );
 }
 
 export function getOperationsSummary(params: {
@@ -490,6 +580,29 @@ export function createBarbershopLedgerEntry(body: Record<string, unknown>) {
   return apiFetch<LedgerRow>("/api/v1/barbershop/ledger", {
     method: "POST",
     body: JSON.stringify(body),
+  });
+}
+
+export function patchBarbershopLedgerEntry(
+  entryId: string,
+  body: {
+    amount?: number;
+    service_type_id?: string;
+    sale_category_id?: string;
+    expense_category_id?: string;
+    note?: string | null;
+  },
+) {
+  return apiFetch<LedgerRow>(`/api/v1/barbershop/ledger/${entryId}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+export function voidBarbershopLedgerEntry(entryId: string, reason: string) {
+  return apiFetch<LedgerRow>(`/api/v1/barbershop/ledger/${entryId}/void`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
   });
 }
 
@@ -569,6 +682,10 @@ export function getDirectoryTeamMemberMonthStats(
     approved_total?: string;
     mismatch_indexes?: number[];
     expected_payout_on_approved?: string;
+    actual_payout_on_approved?: string;
+    attendance_deductions_total?: string;
+    attendance_late_deductions_total?: string;
+    attendance_absence_deductions_total?: string;
     reconciliation_posture?: ReconciliationPosture;
   }>(`/api/v1/barbershop/directory/team/${id}/month-stats${q ? `?${q}` : ""}`);
 }
@@ -696,6 +813,14 @@ export type ReconciliationStreamSide = {
   payment_method?: string | null;
   note?: string | null;
   reconciliation_status?: string | null;
+  record_lifecycle?: string;
+  is_voided?: boolean;
+  void_reason?: string | null;
+  voided_at?: string | null;
+  voided_by_user_id?: string | null;
+  pending_void_reason?: string | null;
+  pending_void_by_user_id?: string | null;
+  pending_void_requested_at?: string | null;
 };
 
 export type ReconciliationWorkspaceRow = {
@@ -884,6 +1009,10 @@ export type BarberDashboardStats = {
   approved_total: string;
   mismatch_indexes: number[];
   expected_payout_on_approved: string;
+  actual_payout_on_approved?: string;
+  attendance_deductions_total?: string;
+  attendance_late_deductions_total?: string;
+  attendance_absence_deductions_total?: string;
 };
 
 export function getBarberDashboard(year?: number, month?: number) {
@@ -1010,6 +1139,43 @@ export function createBarberServiceEntry(body: {
   });
 }
 
+export function patchBarberServiceEntry(
+  entryId: string,
+  body: {
+    amount?: number;
+    service_type_id?: string;
+    note?: string | null;
+  },
+) {
+  return apiFetch<BarberLedgerServiceRow>(`/api/v1/barber/ledger/service/${entryId}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+export function voidBarberServiceEntry(entryId: string, reason: string) {
+  return apiFetch<BarberLedgerServiceRow>(
+    `/api/v1/barber/ledger/service/${entryId}/void`,
+    {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    },
+  );
+}
+
+export function listBarberPendingVoids() {
+  return apiFetch<{ items: PendingVoidRequest[]; total: number }>(
+    "/api/v1/barber/ledger/pending-voids",
+  );
+}
+
+export function acceptBarberPendingVoid(entryId: string) {
+  return apiFetch<BarberLedgerServiceRow>(
+    `/api/v1/barber/ledger/service/${entryId}/accept-void`,
+    { method: "POST", body: JSON.stringify({}) },
+  );
+}
+
 export function barberGetReconciliationDay(businessDay: string) {
   return apiFetch<{
     summary: {
@@ -1068,4 +1234,179 @@ export function barberRejectReconciliationDay(businessDay: string, reason: strin
     `/api/v1/barber/reconciliation/day/${businessDay}/reject`,
     { method: "POST", body: JSON.stringify({ reason }) },
   );
+}
+
+// —— Attendance ——
+
+export type AttendanceStatus = "on_time" | "late" | "absent";
+
+export type AttendanceRecordRow = {
+  id: string;
+  user_id: string;
+  business_date: string;
+  signed_in_at: string | null;
+  status: AttendanceStatus | string;
+  deduction_amount: string;
+  deduction_reason: string | null;
+  sign_in_latitude?: string | null;
+  sign_in_longitude?: string | null;
+};
+
+export type AttendanceSettingsRow = {
+  latitude: string;
+  longitude: string;
+  location_label: string;
+  radius_meters: number;
+  late_time: string;
+  late_deduction_amount: string;
+  absence_deduction_amount: string;
+  updated_at?: string | null;
+  can_edit?: boolean;
+};
+
+export type AttendanceMonthSummary = {
+  year: number;
+  month: number;
+  late_deductions_total: string;
+  absence_deductions_total: string;
+  total_deductions: string;
+  items: AttendanceDeductionItem[];
+};
+
+export type AttendanceTodayResponse = {
+  exempt?: boolean;
+  message?: string;
+  business_date?: string;
+  is_sunday?: boolean;
+  is_off_day?: boolean;
+  can_sign_in?: boolean;
+  attendance_tracking_active?: boolean;
+  attendance_start_date?: string | null;
+  late_time?: string;
+  radius_meters?: number;
+  record?: AttendanceRecordRow | null;
+};
+
+export function getAttendanceSettings() {
+  return apiFetch<{ settings: AttendanceSettingsRow }>("/api/v1/barbershop/attendance/settings");
+}
+
+export function updateAttendanceSettings(body: Record<string, unknown>) {
+  return apiFetch<{ settings: AttendanceSettingsRow }>("/api/v1/barbershop/attendance/settings", {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+export function getTodayAttendance() {
+  return apiFetch<AttendanceTodayResponse>("/api/v1/barbershop/attendance/today");
+}
+
+export function signInAttendance(body: { latitude: number; longitude: number }) {
+  return apiFetch<{
+    message: string;
+    record: AttendanceRecordRow;
+    payout?: MonthPayoutBreakdown;
+  }>("/api/v1/barbershop/attendance/sign-in", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function getMyAttendanceHistory(params?: {
+  year?: number;
+  month?: number;
+  page?: number;
+  page_size?: number;
+}) {
+  const q = new URLSearchParams();
+  if (params?.year != null) q.set("year", String(params.year));
+  if (params?.month != null) q.set("month", String(params.month));
+  if (params?.page != null) q.set("page", String(params.page));
+  if (params?.page_size != null) q.set("page_size", String(params.page_size));
+  const suffix = q.toString() ? `?${q}` : "";
+  return apiFetch<{
+    year: number;
+    month: number;
+    page: number;
+    page_size: number;
+    total: number;
+    summary: AttendanceMonthSummary;
+    items: AttendanceRecordRow[];
+  }>(`/api/v1/barbershop/attendance/me${suffix}`);
+}
+
+export function getUserAttendanceHistory(
+  userId: string,
+  params?: { year?: number; month?: number; page?: number; page_size?: number },
+) {
+  const q = new URLSearchParams();
+  if (params?.year != null) q.set("year", String(params.year));
+  if (params?.month != null) q.set("month", String(params.month));
+  if (params?.page != null) q.set("page", String(params.page));
+  if (params?.page_size != null) q.set("page_size", String(params.page_size));
+  const suffix = q.toString() ? `?${q}` : "";
+  return apiFetch<{
+    user: {
+      id: string;
+      username: string;
+      full_name: string | null;
+      role: string;
+      attendance_off_days: number[];
+      attendance_start_date: string | null;
+    };
+    year: number;
+    month: number;
+    page: number;
+    page_size: number;
+    total: number;
+    summary: AttendanceMonthSummary;
+    items: AttendanceRecordRow[];
+  }>(`/api/v1/barbershop/attendance/users/${userId}${suffix}`);
+}
+
+export function listAttendanceTeamRoster() {
+  return apiFetch<{
+    items: Array<{
+      id: string;
+      username: string;
+      full_name: string | null;
+      role: string;
+      attendance_off_days: number[];
+      attendance_start_date: string | null;
+      today_status: string | null;
+      today_signed_in_at: string | null;
+    }>;
+  }>("/api/v1/barbershop/attendance/team");
+}
+
+export function updateUserAttendanceOffDays(
+  userId: string,
+  offDays: number[],
+  attendanceStartDate?: string | null,
+) {
+  return apiFetch<{
+    user_id: string;
+    attendance_off_days: number[];
+    attendance_start_date: string | null;
+  }>(`/api/v1/barbershop/attendance/users/${userId}/off-days`, {
+    method: "PATCH",
+    body: JSON.stringify({
+      off_days: offDays,
+      ...(attendanceStartDate != null ? { attendance_start_date: attendanceStartDate } : {}),
+    }),
+  });
+}
+
+export function activateUserAttendance(userId: string, attendanceStartDate?: string) {
+  return apiFetch<{
+    user_id: string;
+    attendance_off_days: number[];
+    attendance_start_date: string | null;
+  }>(`/api/v1/barbershop/attendance/users/${userId}/activate`, {
+    method: "POST",
+    body: JSON.stringify(
+      attendanceStartDate ? { attendance_start_date: attendanceStartDate } : {},
+    ),
+  });
 }

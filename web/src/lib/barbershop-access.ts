@@ -37,6 +37,12 @@ export function isBarbershopPathAllowed(
 ): boolean {
   if (!role) return false;
 
+  if (pathname.startsWith("/barbershop/settings/attendance")) {
+    return role === "admin";
+  }
+  if (pathname.startsWith("/barbershop/attendance")) {
+    return role === "admin" || role === "manager" || role === "barber" || role === "staff";
+  }
   if (pathname.startsWith("/barbershop/team") || pathname.startsWith("/barbershop/barbers")) {
     return canAccessBarberManagement(role);
   }

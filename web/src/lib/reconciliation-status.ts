@@ -6,7 +6,10 @@ export type ReconciliationComparisonStatus =
   | "mismatch"
   | "missing_employee_entry"
   | "missing_manager_entry"
-  | "waiting_for_reconciliation";
+  | "waiting_for_reconciliation"
+  | "employee_record_voided"
+  | "manager_record_voided"
+  | "pending_delete_confirmation";
 
 export function isReconciliationComparisonStatus(
   value: string | null | undefined,
@@ -16,7 +19,10 @@ export function isReconciliationComparisonStatus(
     value === "mismatch" ||
     value === "missing_employee_entry" ||
     value === "missing_manager_entry" ||
-    value === "waiting_for_reconciliation"
+    value === "waiting_for_reconciliation" ||
+    value === "employee_record_voided" ||
+    value === "manager_record_voided" ||
+    value === "pending_delete_confirmation"
   );
 }
 
@@ -32,7 +38,11 @@ export function comparisonToTransactionStatus(
     case "missing_employee_entry":
     case "missing_manager_entry":
     case "waiting_for_reconciliation":
+    case "pending_delete_confirmation":
       return "pending";
+    case "employee_record_voided":
+    case "manager_record_voided":
+      return "adjusted";
     default:
       return "pending";
   }
@@ -83,6 +93,35 @@ export function resolveTransactionStatus(opts: {
   return workflowToTransactionStatus(opts.workflowStatus);
 }
 
+export type ReconciliationInboxFilter = "pending" | "mismatch";
+
+/** Whether a service row belongs in the Pending or Mismatch inbox filter. */
+export function matchesReconciliationInboxFilter(
+  comparisonStatus: string | null | undefined,
+  filter: ReconciliationInboxFilter,
+): boolean {
+  if (filter === "pending") {
+    return (
+      comparisonStatus === "missing_manager_entry" ||
+      comparisonStatus === "missing_employee_entry" ||
+      comparisonStatus === "waiting_for_reconciliation"
+    );
+  }
+  return comparisonStatus === "mismatch";
+}
+
+export function countReconciliationInbox(
+  rows: { comparisonStatus?: string | null; type?: string }[],
+  filter: ReconciliationInboxFilter,
+): number {
+  return rows.filter(
+    (r) =>
+      r.type === "service" &&
+      matchesReconciliationInboxFilter(r.comparisonStatus, filter),
+  ).length;
+}
+
+/** @deprecated Use matchesReconciliationInboxFilter for Daily Ledger chips. */
 export function matchesReconciliationFilter(
   status: TransactionStatus,
   filter: "pending" | "approved" | "disputed",
@@ -134,7 +173,11 @@ export function rowHighlightFromComparison(status: string): string {
     case "missing_employee_entry":
     case "missing_manager_entry":
     case "waiting_for_reconciliation":
+    case "pending_delete_confirmation":
       return "bg-amber-500/[0.03] hover:bg-amber-500/[0.06]";
+    case "employee_record_voided":
+    case "manager_record_voided":
+      return "opacity-55 hover:opacity-70";
     default:
       return "hover:bg-[var(--muted)]/25";
   }

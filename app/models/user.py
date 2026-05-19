@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Numeric, String, Text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Numeric, String, Text
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base import Base
@@ -68,6 +68,8 @@ class UserProfile(Base, TimestampMixin):
     bank_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     account_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
     account_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    attendance_off_days: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    attendance_start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
 
     user: Mapped[User] = relationship("User", back_populates="profile")
 

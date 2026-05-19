@@ -7,6 +7,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { TeamPosturePill } from "@/components/ops/team-posture-pill";
 import type { DirectoryTeamRow, ReconciliationPosture } from "@/lib/api";
 import { formatNaira, formatServicesCount } from "@/lib/format";
+import { resolveActualPayout } from "@/lib/payout";
 import { cn } from "@/lib/utils";
 
 export type TeamMemberCardData = {
@@ -18,6 +19,8 @@ export type TeamMemberCardData = {
   monthRevenue: number;
   servicesCount: number;
   expectedPayout: number;
+  actualPayout: number;
+  attendanceDeductionsTotal: number;
   salaryType: string;
   commissionPct: number;
   reconciliationPosture: ReconciliationPosture;
@@ -34,6 +37,9 @@ export function teamRowToCard(row: DirectoryTeamRow): TeamMemberCardData {
       .join("")
       .toUpperCase() || row.username.slice(0, 2).toUpperCase();
 
+  const expectedPayout = Number(row.expected_payout ?? 0);
+  const attendanceDeductionsTotal = Number(row.attendance_deductions_total ?? 0);
+
   return {
     id: row.id,
     displayName: name,
@@ -42,7 +48,13 @@ export function teamRowToCard(row: DirectoryTeamRow): TeamMemberCardData {
     role: row.role,
     monthRevenue: Number(row.current_month_revenue ?? 0),
     servicesCount: row.current_month_services_count ?? 0,
-    expectedPayout: Number(row.expected_payout ?? 0),
+    expectedPayout,
+    actualPayout: resolveActualPayout(
+      expectedPayout,
+      row.actual_payout != null ? Number(row.actual_payout) : null,
+      attendanceDeductionsTotal,
+    ),
+    attendanceDeductionsTotal,
     salaryType: (row.salary_type || "commission").replace(/_/g, " "),
     commissionPct: row.commission_pct ? Number(row.commission_pct) : 0,
     reconciliationPosture: row.reconciliation_posture ?? "clear",
@@ -117,8 +129,13 @@ export function TeamMemberCard({
                   {pay}
                 </p>
                 <p className="mt-1 text-sm font-semibold tabular-nums text-emerald-700 dark:text-emerald-300">
-                  {formatNaira(member.expectedPayout)}
+                  {formatNaira(member.actualPayout)}
                 </p>
+                {member.attendanceDeductionsTotal > 0 ? (
+                  <p className="text-[11px] text-amber-800 dark:text-amber-200">
+                    −{formatNaira(member.attendanceDeductionsTotal)} attendance
+                  </p>
+                ) : null}
                 {member.role === "barber" && member.commissionPct > 0 ? (
                   <p className="text-[11px] text-[var(--muted-foreground)]">
                     {member.commissionPct}% rate

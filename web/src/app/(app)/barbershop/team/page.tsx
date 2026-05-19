@@ -12,6 +12,7 @@ import { useAuth } from "@/components/providers/auth-provider";
 import { ApiError, listDirectoryTeam } from "@/lib/api";
 import { canAccessBarbershopUsers } from "@/lib/barbershop-access";
 import { isAdmin } from "@/lib/roles";
+import { subscribePayoutUpdated } from "@/lib/payout-events";
 import { cn } from "@/lib/utils";
 
 type TeamFilter = "all" | "barber" | "staff";
@@ -31,22 +32,26 @@ export default function TeamPage() {
   const [filter, setFilter] = React.useState<TeamFilter>("all");
   const [roster, setRoster] = React.useState<ReturnType<typeof teamRowToCard>[]>([]);
 
-  React.useEffect(() => {
-    queueMicrotask(async () => {
-      setLoading(true);
-      try {
-        const roleParam = filter === "all" ? undefined : filter;
-        const res = await listDirectoryTeam(roleParam);
-        setRoster(res.items.map(teamRowToCard));
-      } catch (e) {
-        if (e instanceof ApiError) toast.error(e.message);
-        else toast.error("Could not load team roster.");
-        setRoster([]);
-      } finally {
-        setLoading(false);
-      }
-    });
+  const loadRoster = React.useCallback(async () => {
+    setLoading(true);
+    try {
+      const roleParam = filter === "all" ? undefined : filter;
+      const res = await listDirectoryTeam(roleParam);
+      setRoster(res.items.map(teamRowToCard));
+    } catch (e) {
+      if (e instanceof ApiError) toast.error(e.message);
+      else toast.error("Could not load team roster.");
+      setRoster([]);
+    } finally {
+      setLoading(false);
+    }
   }, [filter]);
+
+  React.useEffect(() => {
+    queueMicrotask(() => void loadRoster());
+  }, [loadRoster]);
+
+  React.useEffect(() => subscribePayoutUpdated(() => void loadRoster()), [loadRoster]);
 
   const filtered =
     filter === "all" ? roster : roster.filter((m) => m.role === filter);

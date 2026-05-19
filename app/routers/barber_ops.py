@@ -12,7 +12,7 @@ from app.models.catalog import ServiceType
 from app.services.payroll_service import (
     barber_all_time_approved_total,
     barber_all_time_expected_payout,
-    expected_month_payout,
+    month_payout_breakdown,
 )
 from app.models.reconciliation_timeline import ReconciliationTimelineEvent
 from app.models.user import User
@@ -20,6 +20,7 @@ from app.schemas.operations import (
     BarberRejectBody,
     BarberServiceCreateBody,
     BarberServiceUpdateBody,
+    VoidLedgerBody,
 )
 from app.services import ledger_service, month_lifecycle_service, reconciliation_service
 from app.services.business_time import shop_tz
@@ -95,7 +96,11 @@ def barber_dashboard(
     all_time_payout = barber_all_time_expected_payout(db, user=user)
     pct = user.commission_pct or Decimal("0")
     approved = buckets["approved_total"]
-    expected_payout = expected_month_payout(user, settled=approved, commission_pct=pct)
+    payout, absences_synced = month_payout_breakdown(
+        db, user, year=y, month=m, settled=approved, commission_pct=pct
+    )
+    if absences_synced:
+        db.commit()
     return {
         "year": y,
         "month": m,
@@ -109,7 +114,7 @@ def barber_dashboard(
         "pending_total": str(buckets["pending_total"]),
         "approved_total": str(buckets["approved_total"]),
         "mismatch_indexes": buckets["mismatch_indexes"],
-        "expected_payout_on_approved": str(expected_payout),
+        **payout,
         "used_shop_timezone": str(shop_tz()),
     }
 
@@ -271,14 +276,35 @@ def barber_update_service(
     return _ledger_row(db, row)
 
 
-@router.delete("/ledger/service/{entry_id}")
-def barber_delete_service(
+@router.post("/ledger/service/{entry_id}/void")
+def barber_void_service(
+    entry_id: UUID,
+    body: VoidLedgerBody,
+    request: Request,
+    db: Session = Depends(get_db),
+    actor: ActorContext = Depends(get_service_provider_actor),
+) -> dict:
+    row = ledger_service.void_ledger_entry(
+        db,
+        actor=actor.user,
+        impersonator_id=actor.impersonator.id if actor.impersonator else None,
+        ip_address=request.client.host if request.client else None,
+        entry_id=entry_id,
+        reason=body.reason,
+    )
+    db.commit()
+    db.refresh(row)
+    return _ledger_row(db, row)
+
+
+@router.post("/ledger/service/{entry_id}/accept-void")
+def barber_accept_pending_void(
     entry_id: UUID,
     request: Request,
     db: Session = Depends(get_db),
     actor: ActorContext = Depends(get_service_provider_actor),
 ) -> dict:
-    ledger_service.soft_delete_barber_entry(
+    row = ledger_service.accept_pending_void(
         db,
         actor=actor.user,
         impersonator_id=actor.impersonator.id if actor.impersonator else None,
@@ -286,7 +312,19 @@ def barber_delete_service(
         entry_id=entry_id,
     )
     db.commit()
-    return {"ok": True}
+    db.refresh(row)
+    return _ledger_row(db, row)
+
+
+@router.get("/ledger/pending-voids")
+def barber_pending_voids(
+    db: Session = Depends(get_db),
+    actor: ActorContext = Depends(get_service_provider_actor),
+) -> dict:
+    items = ledger_service.list_pending_void_requests(
+        db, barber_user_id=actor.user.id
+    )
+    return {"items": items, "total": len(items)}
 
 
 @router.get("/reconciliation/day/{business_day}")

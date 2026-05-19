@@ -4,6 +4,8 @@ import * as React from "react";
 import Link from "next/link";
 
 import { BarberProfileView } from "@/components/ops/barber-profile-view";
+import { AttendanceSignInCard } from "@/components/ops/attendance-sign-in-card";
+import { PayoutWithAttendance } from "@/components/ops/payout-with-attendance";
 import { MonthPostureSummary } from "@/components/ops/month-posture-summary";
 import { RecordServiceFab } from "@/components/ops/record-service-fab";
 import { Button } from "@/components/ui/button";
@@ -19,6 +21,8 @@ import {
   type BarberLedgerServiceRow,
 } from "@/lib/api";
 import { formatNaira, formatTimeLabel } from "@/lib/format";
+import { subscribePayoutUpdated } from "@/lib/payout-events";
+import { normalizePayoutBreakdown, resolveActualPayout } from "@/lib/payout";
 import { createEmptyBarberProfileForSession, INITIAL_PAYOUT_HISTORY } from "@/lib/ops-initial-state";
 import type { BarberProfile, LedgerTransaction } from "@/lib/ops-types";
 import { ReconciliationComparisonBadge } from "@/components/ops/reconciliation-comparison-badge";
@@ -102,6 +106,13 @@ export function BarberOperationsDashboard() {
     approvedTotal: 0,
     mismatchIndexes: [] as number[],
   });
+  const [payoutBreakdown, setPayoutBreakdown] = React.useState({
+    expectedPayout: 0,
+    actualPayout: 0,
+    attendanceDeductionsTotal: 0,
+    lateDeductionsTotal: 0,
+    absenceDeductionsTotal: 0,
+  });
   const [tab, setTab] = React.useState<"overview" | "finance">("overview");
   const [page, setPage] = React.useState(1);
   const [reviewDay, setReviewDay] = React.useState(() => new Date().toISOString().slice(0, 10));
@@ -114,6 +125,13 @@ export function BarberOperationsDashboard() {
     if (!baseProfile) return;
     try {
       const s = await getBarberDashboard();
+      const expected = Number(s.expected_payout_on_approved ?? 0);
+      const deductionsTotal = Number(s.attendance_deductions_total ?? 0);
+      const actual = resolveActualPayout(
+        expected,
+        s.actual_payout_on_approved != null ? Number(s.actual_payout_on_approved) : null,
+        deductionsTotal,
+      );
       setBarber({
         ...baseProfile,
         commissionPct: Number(s.commission_pct ?? 0),
@@ -122,7 +140,7 @@ export function BarberOperationsDashboard() {
           services: Number(s.current_month_services_count ?? 0),
           approved: Number(s.approved_total ?? 0),
           pending: Number(s.pending_total ?? 0),
-          payout: Number(s.expected_payout_on_approved ?? 0),
+          payout: actual,
         },
         allTimeStats: {
           revenue: Number(s.all_time_gross_recorded ?? 0),
@@ -136,6 +154,15 @@ export function BarberOperationsDashboard() {
         approvedTotal: Number(s.approved_total ?? 0),
         mismatchIndexes: s.mismatch_indexes ?? [],
       });
+      setPayoutBreakdown(
+        normalizePayoutBreakdown({
+          expectedPayout: expected,
+          actualPayout: actual,
+          attendanceDeductionsTotal: deductionsTotal,
+          lateDeductionsTotal: Number(s.attendance_late_deductions_total ?? 0),
+          absenceDeductionsTotal: Number(s.attendance_absence_deductions_total ?? 0),
+        }),
+      );
     } catch (e) {
       if (e instanceof ApiError) return;
     }
@@ -168,6 +195,27 @@ export function BarberOperationsDashboard() {
     });
   }, [baseProfile, loadStats]);
 
+  React.useEffect(
+    () =>
+      subscribePayoutUpdated((detail) => {
+        if (
+          detail?.expectedPayout != null &&
+          detail.actualPayout != null &&
+          detail.attendanceDeductionsTotal != null
+        ) {
+          setPayoutBreakdown(
+            normalizePayoutBreakdown({
+              expectedPayout: detail.expectedPayout,
+              actualPayout: detail.actualPayout,
+              attendanceDeductionsTotal: detail.attendanceDeductionsTotal,
+            }),
+          );
+        }
+        void loadStats();
+      }),
+    [loadStats],
+  );
+
   React.useEffect(() => {
     queueMicrotask(() => {
       void loadFeed();
@@ -189,7 +237,8 @@ export function BarberOperationsDashboard() {
     );
   }
 
-  const payoutLabel = isStaff ? "Expected salary" : "Expected payout";
+  const expectedPayoutLabel = isStaff ? "Expected salary" : "Expected payout";
+  const actualPayoutLabel = isStaff ? "Actual salary" : "Actual payout";
   const commissionLabel = isStaff ? "Compensation" : "Commission";
 
   return (
@@ -203,6 +252,8 @@ export function BarberOperationsDashboard() {
           shop-wide finances.
         </p>
       </header>
+
+      <AttendanceSignInCard onUpdated={loadStats} />
 
       {showFinanceTab ? (
         <div className="inline-flex rounded-full border border-[var(--border)] bg-[var(--muted)]/40 p-1">
@@ -245,7 +296,7 @@ export function BarberOperationsDashboard() {
             <MonthPostureSummary data={monthPosture} />
           </section>
 
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-6">
             <Card className="border-[var(--border)]/90 sm:col-span-2">
               <CardContent className="space-y-1 p-5 pt-5">
                 <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
@@ -279,14 +330,14 @@ export function BarberOperationsDashboard() {
                 </p>
               </CardContent>
             </Card>
-            <Card>
-              <CardContent className="space-y-1 p-5 pt-5">
-                <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
-                  {payoutLabel}
-                </p>
-                <p className="text-2xl font-semibold tabular-nums text-emerald-700 dark:text-emerald-300">
-                  {formatNaira(barber.monthStats.payout)}
-                </p>
+            <Card className="sm:col-span-2">
+              <CardContent className="p-5 pt-5">
+                <PayoutWithAttendance
+                  compact
+                  data={payoutBreakdown}
+                  expectedLabel={expectedPayoutLabel}
+                  actualLabel={actualPayoutLabel}
+                />
               </CardContent>
             </Card>
           </div>

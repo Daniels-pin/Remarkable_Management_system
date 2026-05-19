@@ -34,6 +34,16 @@ export type LedgerTransaction = {
     history: { at: string; label: string; amount: number }[];
   };
   comparisonStatus?: string;
+  indexLabel?: string;
+  recordLifecycle?: "active" | "deleted" | "purged";
+  isVoided?: boolean;
+  voidReason?: string | null;
+  voidedByLabel?: string | null;
+  voidedAt?: string | null;
+  pendingVoidReason?: string | null;
+  pendingVoidByLabel?: string | null;
+  canEdit?: boolean;
+  canVoid?: boolean;
 };
 
 export type ExpenseSourceBreakdown = {

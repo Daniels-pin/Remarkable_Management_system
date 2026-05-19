@@ -22,7 +22,12 @@ from app.models.enums import (
 )
 from app.models.ledger import LedgerEntry
 from app.services.business_time import shop_tz
-from app.services.ledger_service import first_operational_occurred_at
+from app.services.ledger_service import (
+    first_operational_occurred_at,
+    official_services_count_for_calendar_month,
+    official_services_revenue_in_range,
+    row_counts_toward_official_revenue,
+)
 
 _ZERO = Decimal("0")
 
@@ -169,13 +174,7 @@ def financial_snapshot(
     end: datetime,
 ) -> dict:
     services_revenue = _decimal(
-        _active_in_range(db, start, end)
-        .filter(
-            LedgerEntry.entry_type == LedgerEntryType.SERVICE,
-            LedgerEntry.record_stream == LedgerRecordStream.MANAGER,
-        )
-        .with_entities(func.coalesce(func.sum(LedgerEntry.amount), 0))
-        .scalar()
+        official_services_revenue_in_range(db, start=start, end=end)
     )
     product_sales = _decimal(
         _active_in_range(db, start, end)
@@ -245,37 +244,25 @@ def financial_snapshot(
     total_revenue = services_revenue + product_sales
     net_profit = total_revenue - total_expenses
 
-    revenue_types = [LedgerEntryType.SERVICE, LedgerEntryType.SALE]
+    revenue_rows = (
+        _active_in_range(db, start, end)
+        .filter(LedgerEntry.entry_type.in_([LedgerEntryType.SERVICE, LedgerEntryType.SALE]))
+        .all()
+    )
     payment_methods = {
-        PaymentMethod.CASH: _decimal(
-            _active_in_range(db, start, end)
-            .filter(
-                LedgerEntry.entry_type.in_(revenue_types),
-                LedgerEntry.payment_method == PaymentMethod.CASH,
-            )
-            .with_entities(func.coalesce(func.sum(LedgerEntry.amount), 0))
-            .scalar()
-        ),
-        PaymentMethod.TRANSFER: _decimal(
-            _active_in_range(db, start, end)
-            .filter(
-                LedgerEntry.entry_type.in_(revenue_types),
-                LedgerEntry.payment_method == PaymentMethod.TRANSFER,
-            )
-            .with_entities(func.coalesce(func.sum(LedgerEntry.amount), 0))
-            .scalar()
-        ),
-        PaymentMethod.POS: _decimal(
-            _active_in_range(db, start, end)
-            .filter(
-                LedgerEntry.entry_type.in_(revenue_types),
-                LedgerEntry.payment_method == PaymentMethod.POS,
-            )
-            .with_entities(func.coalesce(func.sum(LedgerEntry.amount), 0))
-            .scalar()
-        ),
+        PaymentMethod.CASH: _ZERO,
+        PaymentMethod.TRANSFER: _ZERO,
+        PaymentMethod.POS: _ZERO,
         "card": _ZERO,
     }
+    for row in revenue_rows:
+        if row.entry_type == LedgerEntryType.SERVICE and not row_counts_toward_official_revenue(
+            db, row
+        ):
+            continue
+        method = row.payment_method
+        if method in payment_methods:
+            payment_methods[method] += _decimal(row.amount)
 
     return {
         "total_revenue": str(total_revenue),
@@ -343,17 +330,7 @@ def month_expense_summary(db: Session, *, year: int, month: int) -> dict:
 
 
 def month_services_count(db: Session, *, year: int, month: int) -> int:
-    val = (
-        db.query(func.count(LedgerEntry.id))
-        .filter(
-            LedgerEntry.record_lifecycle == RecordLifecycleState.ACTIVE,
-            LedgerEntry.entry_type == LedgerEntryType.SERVICE,
-            extract("year", LedgerEntry.business_date) == year,
-            extract("month", LedgerEntry.business_date) == month,
-        )
-        .scalar()
-    )
-    return int(val or 0)
+    return official_services_count_for_calendar_month(db, year=year, month=month)
 
 
 def month_reconciliation_summary(db: Session, *, year: int, month: int) -> dict:

@@ -74,6 +74,7 @@ class LedgerReconciliationStatus(StrEnum):
     LOCKED = "locked"
     MISSING_BARBER_ENTRY = "missing_barber_entry"
     MANAGER_OVERRIDE = "manager_override"
+    PENDING_DELETE_CONFIRMATION = "pending_delete_confirmation"
 
 
 class BarberDailySummaryStatus(StrEnum):
@@ -94,6 +95,8 @@ class ReconciliationTimelineEventType(StrEnum):
     MANAGER_REVISED = "manager_revised"
     ADMIN_RESOLVED = "admin_resolved"
     ENTRY_SOFT_DELETED = "entry_soft_deleted"
+    ENTRY_VOIDED = "entry_voided"
+    ENTRY_VOID_REQUESTED = "entry_void_requested"
     ENTRY_PURGED = "entry_purged"
     MONTH_REOPENED = "month_reopened"
 
@@ -115,3 +118,9 @@ class ServiceTypeStatus(StrEnum):
     ACTIVE = "active"
     DISABLED = "disabled"
     ARCHIVED = "archived"
+
+
+class AttendanceStatus(StrEnum):
+    ON_TIME = "on_time"
+    LATE = "late"
+    ABSENT = "absent"

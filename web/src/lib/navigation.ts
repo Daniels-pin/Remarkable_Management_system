@@ -2,9 +2,11 @@ import type { LucideIcon } from "lucide-react";
 import {
   Bell,
   BookOpen,
+  Clock3,
   CreditCard,
   LayoutDashboard,
   Receipt,
+  Settings2,
   UsersRound,
   UserCircle,
   Users,
@@ -38,6 +40,12 @@ export const barbershopNav: NavItem[] = [
     roles: employeeOps,
   },
   {
+    label: "Attendance",
+    href: "/barbershop/attendance",
+    icon: Clock3,
+    roles: ["admin", "manager", "staff", "barber"],
+  },
+  {
     label: "Team",
     href: "/barbershop/team",
     icon: UsersRound,
@@ -59,6 +67,12 @@ export const barbershopNav: NavItem[] = [
     label: "Users",
     href: "/barbershop/users",
     icon: Users,
+    roles: ["admin"],
+  },
+  {
+    label: "Attendance Settings",
+    href: "/barbershop/settings/attendance",
+    icon: Settings2,
     roles: ["admin"],
   },
   {

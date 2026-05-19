@@ -3,6 +3,7 @@
 import * as React from "react";
 
 import { Card, CardContent } from "@/components/ui/card";
+import { AttendanceSignInCard } from "@/components/ops/attendance-sign-in-card";
 import { PaymentMethodBreakdown } from "@/components/ops/payment-method-breakdown";
 import { SummaryMetricCard } from "@/components/ops/summary-metric-card";
 import { Button } from "@/components/ui/button";
@@ -60,6 +61,8 @@ export function ManagerOperationsDashboard() {
           Payroll and owner-level finance stay in admin tools.
         </p>
       </header>
+
+      <AttendanceSignInCard />
 
       <div className="flex flex-wrap gap-1.5">
         {PRESETS.map((p) => (

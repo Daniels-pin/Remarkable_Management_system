@@ -3,6 +3,10 @@
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Card, CardContent } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
+import {
+  PayoutWithAttendance,
+  type PayoutAttendanceBreakdown,
+} from "@/components/ops/payout-with-attendance";
 import { formatNaira, formatServicesCount } from "@/lib/format";
 import type { BarberProfile, TeamMemberProfile } from "@/lib/ops-types";
 import { cn } from "@/lib/utils";
@@ -41,6 +45,7 @@ function FinanceSummaryCard({
   title,
   stats,
   payoutLabel = "Payout",
+  payoutBreakdown,
 }: {
   title: string;
   stats: {
@@ -51,6 +56,7 @@ function FinanceSummaryCard({
     pending?: number;
   };
   payoutLabel?: string;
+  payoutBreakdown?: PayoutAttendanceBreakdown;
 }) {
   const metricCount =
     2 +
@@ -90,11 +96,22 @@ function FinanceSummaryCard({
               valueClassName="text-amber-900 dark:text-amber-100"
             />
           ) : null}
-          <FinanceStat
-            label={payoutLabel}
-            value={formatNaira(stats.payout)}
-            valueClassName="text-emerald-700 dark:text-emerald-300"
-          />
+          {payoutBreakdown ? (
+            <div className="min-w-0 sm:col-span-2 lg:col-span-2">
+              <PayoutWithAttendance
+                compact
+                data={payoutBreakdown}
+                expectedLabel={`Expected ${payoutLabel.toLowerCase()}`}
+                actualLabel={`Actual ${payoutLabel.toLowerCase()}`}
+              />
+            </div>
+          ) : (
+            <FinanceStat
+              label={payoutLabel}
+              value={formatNaira(stats.payout)}
+              valueClassName="text-emerald-700 dark:text-emerald-300"
+            />
+          )}
         </div>
       </CardContent>
     </Card>
@@ -197,9 +214,11 @@ function ProfileHeaderInner({
 export function TeamMemberProfileView({
   profile,
   variant = "full",
+  monthPayoutBreakdown,
 }: {
   profile: TeamMemberProfile;
   variant?: "full" | "embedded";
+  monthPayoutBreakdown?: PayoutAttendanceBreakdown;
 }) {
   const payoutLabel =
     profile.role === "staff" && profile.salaryType.includes("fixed") ? "Salary" : "Payout";
@@ -212,6 +231,7 @@ export function TeamMemberProfileView({
           title="This month"
           stats={profile.monthStats}
           payoutLabel={payoutLabel}
+          payoutBreakdown={monthPayoutBreakdown}
         />
         <FinanceSummaryCard
           title="All-time"

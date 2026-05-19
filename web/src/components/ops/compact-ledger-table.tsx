@@ -3,12 +3,14 @@
 import * as React from "react";
 import { ChevronDown } from "lucide-react";
 
+import { LedgerVoidBadge } from "@/components/ops/ledger-void-badge";
 import { ReconciliationComparisonBadge } from "@/components/ops/reconciliation-comparison-badge";
 import { ReconciliationReviewDialog } from "@/components/ops/reconciliation-review-dialog";
 import { StatusBadge } from "@/components/ops/status-badge";
 import { Button } from "@/components/ui/button";
 import { formatExpensePaymentSource } from "@/lib/expense-payment";
 import { formatNaira, formatTimeLabel, formatTimeShort } from "@/lib/format";
+import { formatLedgerIndexLabel } from "@/lib/ledger-index";
 import type { LedgerTransaction } from "@/lib/ops-types";
 import type { ReconciliationComparisonStatus } from "@/lib/reconciliation-status";
 import { rowHighlightFromComparison } from "@/lib/reconciliation-status";
@@ -45,15 +47,21 @@ function AuditField({ label, children }: { label: string; children: React.ReactN
 function CompactLedgerRow({
   row,
   onReview,
+  onVoid,
+  onEdit,
 }: {
   row: LedgerTransaction;
   onReview: (t: LedgerTransaction) => void;
+  onVoid?: (t: LedgerTransaction) => void;
+  onEdit?: (t: LedgerTransaction) => void;
 }) {
   const [expanded, setExpanded] = React.useState(false);
   const label = typeLabel(row);
   const payment = formatPayment(row);
   const time = formatTimeShort(row.createdAt);
   const comparisonStatus = row.comparisonStatus as ReconciliationComparisonStatus | undefined;
+  const voided = row.isVoided || row.recordLifecycle === "deleted";
+  const showActions = !voided && !row.pendingVoidReason && (onVoid || onEdit);
 
   const toggle = () => setExpanded((v) => !v);
 
@@ -61,7 +69,8 @@ function CompactLedgerRow({
     <li
       className={cn(
         "border-b border-[var(--border)]/70 last:border-b-0 transition-colors",
-        row.type === "service" && comparisonStatus
+        voided && "opacity-55",
+        row.type === "service" && comparisonStatus && !voided
           ? rowHighlightFromComparison(comparisonStatus)
           : "hover:bg-[var(--muted)]/20",
         expanded && "bg-[var(--muted)]/15",
@@ -82,10 +91,24 @@ function CompactLedgerRow({
       >
         <div className="flex min-w-0 items-center gap-2 md:contents">
           <span className="shrink-0 font-mono text-[11px] font-medium tabular-nums text-[var(--muted-foreground)] md:col-start-1">
-            #{String(row.index).padStart(3, "0")}
+            {formatLedgerIndexLabel(row.type, row.index, row.indexLabel)}
           </span>
           <span className="min-w-0 flex-1 truncate text-xs font-medium text-[var(--foreground)] md:col-start-2">
             {label}
+            {voided || row.pendingVoidReason ? (
+              <span className="ml-2 inline-block align-middle">
+                <LedgerVoidBadge
+                  compact
+                  meta={{
+                    isVoided: voided,
+                    voidReason: row.voidReason,
+                    voidedByLabel: row.voidedByLabel,
+                    pendingVoidReason: row.pendingVoidReason,
+                    pendingVoidByLabel: row.pendingVoidByLabel,
+                  }}
+                />
+              </span>
+            ) : null}
           </span>
           <span className="shrink-0 md:hidden">
             {row.type === "service" && comparisonStatus ? (
@@ -206,10 +229,84 @@ function CompactLedgerRow({
             </div>
           ) : null}
 
+          {(voided || row.pendingVoidReason) ? (
+            <VoidAuditBlock row={row} voided={voided} />
+          ) : null}
+
+          {showActions ? (
+            <RowActionsBlock row={row} onEdit={onEdit} onVoid={onVoid} />
+          ) : null}
+
           <p className="mt-2 font-mono text-[10px] text-[var(--muted-foreground)]">ID:{row.id}</p>
         </div>
       ) : null}
     </li>
+  );
+}
+
+function VoidAuditBlock({
+  row,
+  voided,
+}: {
+  row: LedgerTransaction;
+  voided: boolean;
+}) {
+  return (
+    <div className="mt-3 border-t border-[var(--border)]/50 pt-2">
+      <LedgerVoidBadge
+        meta={{
+          isVoided: voided,
+          voidReason: row.voidReason,
+          voidedByLabel: row.voidedByLabel,
+          voidedAt: row.voidedAt,
+          pendingVoidReason: row.pendingVoidReason,
+          pendingVoidByLabel: row.pendingVoidByLabel,
+        }}
+      />
+    </div>
+  );
+}
+
+function RowActionsBlock({
+  row,
+  onEdit,
+  onVoid,
+}: {
+  row: LedgerTransaction;
+  onEdit?: (t: LedgerTransaction) => void;
+  onVoid?: (t: LedgerTransaction) => void;
+}) {
+  return (
+    <div className="mt-3 flex flex-wrap gap-2 border-t border-[var(--border)]/50 pt-2">
+      {onEdit && row.canEdit !== false ? (
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="rounded-full text-xs"
+          onClick={(e) => {
+            e.stopPropagation();
+            onEdit(row);
+          }}
+        >
+          Edit
+        </Button>
+      ) : null}
+      {onVoid && row.canVoid !== false ? (
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="rounded-full border-red-500/30 text-xs text-red-600 hover:bg-red-500/5 dark:text-red-400"
+          onClick={(e) => {
+            e.stopPropagation();
+            onVoid(row);
+          }}
+        >
+          Void record
+        </Button>
+      ) : null}
+    </div>
   );
 }
 
@@ -219,12 +316,16 @@ export function CompactLedgerTable({
   emptyTitle,
   emptyBody,
   onReconciliationAccept,
+  onVoid,
+  onEdit,
 }: {
   rows: LedgerTransaction[];
   loading: boolean;
   emptyTitle: string;
   emptyBody: string;
   onReconciliationAccept?: (id: string) => void;
+  onVoid?: (row: LedgerTransaction) => void;
+  onEdit?: (row: LedgerTransaction) => void;
 }) {
   const [review, setReview] = React.useState<LedgerTransaction | null>(null);
 
@@ -260,7 +361,13 @@ export function CompactLedgerTable({
           ) : (
             <ul>
               {rows.map((row) => (
-                <CompactLedgerRow key={row.id} row={row} onReview={setReview} />
+                <CompactLedgerRow
+                  key={row.id}
+                  row={row}
+                  onReview={setReview}
+                  onVoid={onVoid}
+                  onEdit={onEdit}
+                />
               ))}
             </ul>
           )}

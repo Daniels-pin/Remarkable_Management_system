@@ -19,6 +19,7 @@ from app.routers import (
     auth,
     barber_ops,
     barbershop_analytics,
+    barbershop_attendance,
     barbershop_catalog,
     barbershop_directory,
     barbershop_ledger,
@@ -35,7 +36,7 @@ from app.routers import (
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     from app.database.session import SessionLocal
-    from app.services import month_lifecycle_service
+    from app.services import attendance_service, month_lifecycle_service
 
     db: Session = SessionLocal()
     try:
@@ -46,6 +47,16 @@ async def lifespan(_app: FastAPI):
         raise
     finally:
         db.close()
+
+    db = SessionLocal()
+    try:
+        attendance_service.reconcile_all_attendance(db)
+        db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
     yield
 
 
@@ -93,5 +104,6 @@ api_v1.include_router(barbershop_catalog.router)
 api_v1.include_router(barbershop_directory.router)
 api_v1.include_router(barbershop_ledger.router)
 api_v1.include_router(barbershop_analytics.router)
+api_v1.include_router(barbershop_attendance.router)
 api_v1.include_router(furniture.router)
 app.include_router(api_v1)

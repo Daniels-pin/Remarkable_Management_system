@@ -322,7 +322,8 @@ def serialize_month_row(
     operational = shaped["operational_expenses"]
     rent = shaped.get("rent_expenses", "0")
     payroll = shaped.get("payroll_commission", "0")
-    if snapshot_payload:
+    # Locked months use the captured snapshot; open/grace months always use live ledger math.
+    if snapshot_payload and fm.state == FinancialMonthState.LOCKED:
         revenue = snapshot_payload.get("total_revenue", revenue)
         if str(role) == UserRole.ADMIN:
             expenses = snapshot_payload.get("total_expenses", expenses)

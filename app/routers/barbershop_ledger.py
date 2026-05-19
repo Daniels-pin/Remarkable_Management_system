@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from app.auth.rbac import require_manager_or_admin
@@ -16,6 +16,13 @@ from app.schemas.ledger import (
     LedgerEntryCreateExpense,
     LedgerEntryCreateSale,
     LedgerEntryCreateService,
+)
+from app.schemas.operations import (
+    LedgerEntryUpdateBody,
+    ReconciliationMatchAllBody,
+    ReconciliationMatchBody,
+    ReconciliationMismatchResolveBody,
+    VoidLedgerBody,
 )
 from app.services import catalog_service, ledger_service
 from app.services.business_time import business_date_for_instant
@@ -64,12 +71,16 @@ def _enrich_row(
         "employee_user_id": str(r.employee_user_id) if r.employee_user_id else None,
         "employee_label": _employee_label(db, r.employee_user_id),
         "barber_sequence_index": r.barber_sequence_index,
+        "index_label": ledger_service.format_ledger_index_label(
+            r.entry_type, r.barber_sequence_index
+        ),
         "reconciliation_status": str(r.reconciliation_status) if r.reconciliation_status else None,
         "is_manager_created_without_barber": r.is_manager_created_without_barber,
         "service_type": {"id": str(service.id), "name": service.name} if service else None,
         "sale_category": {"id": str(sale.id), "name": sale.name} if sale else None,
         "expense_category": {"id": str(expense.id), "name": expense.name} if expense else None,
         "record_lifecycle": str(r.record_lifecycle),
+        **ledger_service.ledger_entry_void_metadata(db, r),
     }
 
 
@@ -82,7 +93,9 @@ def list_ledger(
         rows = (
             db.query(LedgerEntry)
             .filter(
-                LedgerEntry.record_lifecycle == RecordLifecycleState.ACTIVE,
+                LedgerEntry.record_lifecycle.in_(
+                    (RecordLifecycleState.ACTIVE, RecordLifecycleState.DELETED)
+                ),
                 LedgerEntry.entry_type == LedgerEntryType.SERVICE,
                 LedgerEntry.employee_user_id == actor.user.id,
                 LedgerEntry.record_stream == LedgerRecordStream.EMPLOYEE,
@@ -150,6 +163,9 @@ def create_ledger_entry(
         catalog_service.assert_sale_category_selectable(db, parsed.sale_category_id)
         business_date = business_date_for_instant(parsed.occurred_at)
         fm = require_financial_month_for_new_entry(db, business_date, actor.user)
+        sale_idx = ledger_service.allocate_shop_sequence_index(
+            db, financial_month_id=fm.id, entry_type=LedgerEntryType.SALE
+        )
         row = LedgerEntry(
             financial_month_id=fm.id,
             entry_type=LedgerEntryType.SALE,
@@ -158,6 +174,7 @@ def create_ledger_entry(
             sale_category_id=parsed.sale_category_id,
             employee_user_id=None,
             amount=Decimal(parsed.amount),
+            barber_sequence_index=sale_idx,
             payment_method=parsed.payment_method,
             note=parsed.note,
             created_by_user_id=actor.user.id,
@@ -171,6 +188,9 @@ def create_ledger_entry(
     catalog_service.assert_expense_category_selectable(db, parsed.expense_category_id)
     business_date = business_date_for_instant(parsed.occurred_at)
     fm = require_financial_month_for_new_entry(db, business_date, actor.user)
+    expense_idx = ledger_service.allocate_shop_sequence_index(
+        db, financial_month_id=fm.id, entry_type=LedgerEntryType.EXPENSE
+    )
     row = LedgerEntry(
         financial_month_id=fm.id,
         entry_type=LedgerEntryType.EXPENSE,
@@ -179,11 +199,127 @@ def create_ledger_entry(
         expense_category_id=parsed.expense_category_id,
         employee_user_id=None,
         amount=Decimal(parsed.amount),
+        barber_sequence_index=expense_idx,
         payment_method=parsed.payment_method,
         note=parsed.note,
         created_by_user_id=actor.user.id,
     )
     db.add(row)
+    db.commit()
+    db.refresh(row)
+    return _enrich_row(db, row)
+
+
+@router.get("/reconciliation-inbox")
+def reconciliation_inbox(
+    filter: str,
+    db: Session = Depends(get_db),
+    actor: ActorContext = Depends(get_actor_context),
+) -> dict:
+    """Pending or mismatch service slots for the operational reconciliation inbox."""
+    require_manager_or_admin(actor.user)
+    items = ledger_service.list_reconciliation_inbox(db, inbox_filter=filter, limit=200)
+    return {"filter": filter, "items": items, "total": len(items)}
+
+
+@router.post("/match/{employee_entry_id}")
+def match_pending_entry(
+    employee_entry_id: uuid.UUID,
+    body: ReconciliationMatchBody,
+    db: Session = Depends(get_db),
+    actor: ActorContext = Depends(get_actor_context),
+) -> dict:
+    require_manager_or_admin(actor.user)
+    row = ledger_service.match_pending_employee_entry(
+        db,
+        manager=actor.user,
+        employee_entry_id=employee_entry_id,
+        payment_method=body.payment_method,
+    )
+    db.commit()
+    db.refresh(row)
+    return _enrich_row(db, row)
+
+
+@router.post("/match-all")
+def match_all_pending(
+    body: ReconciliationMatchAllBody,
+    db: Session = Depends(get_db),
+    actor: ActorContext = Depends(get_actor_context),
+) -> dict:
+    require_manager_or_admin(actor.user)
+    matched = ledger_service.match_all_pending_employee_entries(
+        db,
+        manager=actor.user,
+        payment_method=body.payment_method,
+    )
+    db.commit()
+    return {"matched_count": len(matched), "items": [_enrich_row(db, r) for r in matched]}
+
+
+@router.post("/mismatch/resolve")
+def resolve_mismatch(
+    body: ReconciliationMismatchResolveBody,
+    db: Session = Depends(get_db),
+    actor: ActorContext = Depends(get_actor_context),
+) -> dict:
+    """Set manager amount to employee amount and mark matched when aligned."""
+    require_manager_or_admin(actor.user)
+    employee_row, mgr_row = ledger_service.resolve_mismatch_use_employee_amount(
+        db,
+        manager=actor.user,
+        employee_entry_id=body.employee_entry_id,
+    )
+    db.commit()
+    return {
+        "employee": _enrich_row(db, employee_row),
+        "manager": _enrich_row(db, mgr_row),
+    }
+
+
+@router.patch("/{entry_id}")
+def update_ledger_entry(
+    entry_id: uuid.UUID,
+    body: LedgerEntryUpdateBody,
+    request: Request,
+    db: Session = Depends(get_db),
+    actor: ActorContext = Depends(get_actor_context),
+) -> dict:
+    require_manager_or_admin(actor.user)
+    row = ledger_service.update_manager_ledger_entry(
+        db,
+        actor=actor.user,
+        impersonator_id=actor.impersonator.id if actor.impersonator else None,
+        ip_address=request.client.host if request.client else None,
+        entry_id=entry_id,
+        amount=body.amount,
+        service_type_id=body.service_type_id,
+        sale_category_id=body.sale_category_id,
+        expense_category_id=body.expense_category_id,
+        note=body.note,
+    )
+    db.commit()
+    db.refresh(row)
+    return _enrich_row(db, row)
+
+
+@router.post("/{entry_id}/void")
+def void_ledger_entry(
+    entry_id: uuid.UUID,
+    body: VoidLedgerBody,
+    request: Request,
+    db: Session = Depends(get_db),
+    actor: ActorContext = Depends(get_actor_context),
+) -> dict:
+    require_manager_or_admin(actor.user)
+    row = ledger_service.void_ledger_entry(
+        db,
+        actor=actor.user,
+        impersonator_id=actor.impersonator.id if actor.impersonator else None,
+        ip_address=request.client.host if request.client else None,
+        entry_id=entry_id,
+        reason=body.reason,
+    )
     db.commit()
     db.refresh(row)
     return _enrich_row(db, row)

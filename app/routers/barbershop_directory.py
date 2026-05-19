@@ -13,7 +13,7 @@ from app.models.barber_daily_summary import BarberDailySummary
 from app.services.payroll_service import (
     barber_all_time_approved_total,
     barber_all_time_expected_payout,
-    expected_month_payout,
+    month_payout_breakdown,
 )
 from app.models.enums import (
     AccountStatus,
@@ -80,7 +80,7 @@ def _posture_label(buckets: dict) -> str:
 
 def _month_stats_payload(
     db: Session, u: User, *, year: int, month: int, include_payroll: bool = True
-) -> dict:
+) -> tuple[dict, int]:
     buckets = barber_month_revenue_buckets(db, barber_user_id=u.id, year=year, month=month)
     gross = barber_month_gross_recorded(db, barber_user_id=u.id, year=year, month=month)
     services_count = barber_month_services_count(db, barber_user_id=u.id, year=year, month=month)
@@ -102,8 +102,11 @@ def _month_stats_payload(
         "mismatch_indexes": buckets["mismatch_indexes"],
         "reconciliation_posture": _posture_label(buckets),
     }
+    absences_synced = 0
     if include_payroll:
-        expected_payout = expected_month_payout(u, settled=approved, commission_pct=pct)
+        payout, absences_synced = month_payout_breakdown(
+            db, u, year=year, month=month, settled=approved, commission_pct=pct
+        )
         payload.update(
             {
                 "commission_pct": str(pct),
@@ -113,10 +116,10 @@ def _month_stats_payload(
                 "all_time_services_count": all_time_services,
                 "all_time_approved_total": str(all_time_approved),
                 "all_time_commission_total": str(all_time_payout),
-                "expected_payout_on_approved": str(expected_payout),
+                **payout,
             }
         )
-    return payload
+    return payload, absences_synced
 
 
 def _get_team_member(db: Session, user_id: uuid.UUID) -> User | None:
@@ -158,12 +161,12 @@ def list_team(
         q = q.filter(User.role == UserRole.STAFF)
 
     items = []
+    absences_synced = 0
     for u in q.all():
         buckets = barber_month_revenue_buckets(db, barber_user_id=u.id, year=y, month=m)
         gross = barber_month_gross_recorded(db, barber_user_id=u.id, year=y, month=m)
         services = barber_month_services_count(db, barber_user_id=u.id, year=y, month=m)
         pct = u.commission_pct or Decimal(0)
-        expected = expected_month_payout(u, settled=buckets["approved_total"], commission_pct=pct)
         include_payroll = actor.user.role == UserRole.ADMIN
         base = _serialize_team_member(u, include_payroll=include_payroll)
         base.update(
@@ -174,8 +177,22 @@ def list_team(
             }
         )
         if include_payroll:
-            base["expected_payout"] = str(expected)
+            payout, synced = month_payout_breakdown(
+                db,
+                u,
+                year=y,
+                month=m,
+                settled=buckets["approved_total"],
+                commission_pct=pct,
+            )
+            absences_synced += synced
+            base["expected_payout"] = payout["expected_payout_on_approved"]
+            base["actual_payout"] = payout["actual_payout_on_approved"]
+            base["attendance_deductions_total"] = payout["attendance_deductions_total"]
         items.append(base)
+
+    if absences_synced:
+        db.commit()
 
     return {"items": items, "year": y, "month": m}
 
@@ -219,7 +236,12 @@ def team_member_month_stats(
     if u is None:
         return {"found": False}
     include_payroll = actor.user.role == UserRole.ADMIN
-    return _month_stats_payload(db, u, year=y, month=m, include_payroll=include_payroll)
+    payload, absences_synced = _month_stats_payload(
+        db, u, year=y, month=m, include_payroll=include_payroll
+    )
+    if absences_synced:
+        db.commit()
+    return payload
 
 
 @router.get("/team/{member_user_id}/ledger")
@@ -541,7 +563,10 @@ def barber_month_stats(
     u = db.get(User, barber_user_id)
     if u is None or u.role != UserRole.BARBER:
         return {"found": False}
-    return _month_stats_payload(db, u, year=y, month=m)
+    payload, absences_synced = _month_stats_payload(db, u, year=y, month=m)
+    if absences_synced:
+        db.commit()
+    return payload
 
 
 @router.get("/barbers/{barber_user_id}/ledger")

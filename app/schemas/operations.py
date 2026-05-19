@@ -40,6 +40,18 @@ class ManagerOfficialLineBody(BaseModel):
     note: str | None = None
 
 
+class ReconciliationMatchBody(BaseModel):
+    payment_method: PaymentMethod
+
+
+class ReconciliationMatchAllBody(BaseModel):
+    payment_method: PaymentMethod
+
+
+class ReconciliationMismatchResolveBody(BaseModel):
+    employee_entry_id: UUID
+
+
 class BarberRejectBody(BaseModel):
     reason: str = Field(..., min_length=1)
 
@@ -51,6 +63,18 @@ class AdminResolveDisputeBody(BaseModel):
 
 class PurgeLedgerBody(BaseModel):
     reason: str = Field(..., min_length=1)
+
+
+class VoidLedgerBody(BaseModel):
+    reason: str = Field(..., min_length=1)
+
+
+class LedgerEntryUpdateBody(BaseModel):
+    amount: Decimal | None = Field(default=None, gt=0)
+    service_type_id: UUID | None = None
+    sale_category_id: UUID | None = None
+    expense_category_id: UUID | None = None
+    note: str | None = None
 
 
 class CommissionMarkPaidBody(BaseModel):

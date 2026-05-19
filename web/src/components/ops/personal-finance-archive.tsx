@@ -22,7 +22,10 @@ import {
   monthLabel,
   normalizeFinancialMonthState,
 } from "@/lib/financial-month";
+import { PayoutWithAttendance } from "@/components/ops/payout-with-attendance";
 import { formatNaira } from "@/lib/format";
+import { resolveActualPayout } from "@/lib/payout";
+import { subscribePayoutUpdated } from "@/lib/payout-events";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
@@ -35,7 +38,8 @@ function payoutLabel(state: string | undefined) {
 export function PersonalFinanceArchive() {
   const { session } = useAuth();
   const isStaff = session?.role === "staff";
-  const earningsLabel = isStaff ? "Salary earned" : "Commission earned";
+  const expectedPayoutLabel = isStaff ? "Expected salary" : "Expected payout";
+  const actualPayoutLabel = isStaff ? "Actual salary" : "Actual payout";
   const headline = isStaff ? "Earnings & salary archive" : "Earnings & payout archive";
 
   const [open, setOpen] = React.useState(false);
@@ -60,6 +64,8 @@ export function PersonalFinanceArchive() {
   React.useEffect(() => {
     queueMicrotask(() => void load());
   }, [load]);
+
+  React.useEffect(() => subscribePayoutUpdated(() => void load()), [load]);
 
   const periodSubline = React.useMemo(() => {
     if (!active) return "—";
@@ -110,6 +116,13 @@ export function PersonalFinanceArchive() {
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {months.map((m) => {
             const payout = payoutLabel(m.payout_state);
+            const expected = Number(m.earnings_amount ?? 0);
+            const deductions = Number(m.attendance_deductions_total ?? 0);
+            const net = resolveActualPayout(
+              expected,
+              m.net_earnings_amount != null ? Number(m.net_earnings_amount) : null,
+              deductions,
+            );
             return (
               <button
                 key={m.id}
@@ -144,11 +157,27 @@ export function PersonalFinanceArchive() {
                     </span>
                   </div>
                   <div className="flex justify-between gap-2">
-                    <span className="text-[var(--muted-foreground)]">{earningsLabel}</span>
+                    <span className="text-[var(--muted-foreground)]">{expectedPayoutLabel}</span>
                     <span className="tabular-nums font-medium text-[var(--foreground)]">
                       {m.earnings_amount != null ? formatNaira(Number(m.earnings_amount)) : "—"}
                     </span>
                   </div>
+                  {deductions > 0 ? (
+                    <div className="flex justify-between gap-2">
+                      <span className="text-[var(--muted-foreground)]">Attendance penalties</span>
+                      <span className="tabular-nums font-medium text-amber-800 dark:text-amber-200">
+                        −{formatNaira(deductions)}
+                      </span>
+                    </div>
+                  ) : null}
+                  {m.net_earnings_amount != null || deductions > 0 ? (
+                    <div className="flex justify-between gap-2">
+                      <span className="text-[var(--muted-foreground)]">{actualPayoutLabel}</span>
+                      <span className="tabular-nums font-semibold text-emerald-700 dark:text-emerald-300">
+                        {formatNaira(net)}
+                      </span>
+                    </div>
+                  ) : null}
                   <div className="flex justify-between gap-2 pt-1">
                     <span className="text-[var(--muted-foreground)]">Payout</span>
                     <span className={cn("font-medium", payout.tone)}>{payout.label}</span>
@@ -175,37 +204,103 @@ export function PersonalFinanceArchive() {
                   <p className="text-xs text-[var(--muted-foreground)]">{periodSubline}</p>
                 </div>
 
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <Card>
-                    <CardContent className="space-y-1 p-4 pt-4">
-                      <p className="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">
-                        Matched approved total
+                <Card>
+                  <CardContent className="space-y-1 p-4 pt-4">
+                    <p className="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">
+                      Matched approved total
+                    </p>
+                    <p className="text-lg font-semibold tabular-nums">
+                      {active.approved_total != null
+                        ? formatNaira(Number(active.approved_total))
+                        : "—"}
+                    </p>
+                    {active.commission_pct_at_close ? (
+                      <p className="text-xs text-[var(--muted-foreground)]">
+                        Rate at close: {active.commission_pct_at_close}%
                       </p>
-                      <p className="text-lg font-semibold tabular-nums">
-                        {active.approved_total != null
-                          ? formatNaira(Number(active.approved_total))
-                          : "—"}
-                      </p>
-                    </CardContent>
-                  </Card>
-                  <Card>
-                    <CardContent className="space-y-1 p-4 pt-4">
-                      <p className="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">
-                        {earningsLabel}
-                      </p>
-                      <p className="text-lg font-semibold tabular-nums text-emerald-700 dark:text-emerald-300">
-                        {active.earnings_amount != null
-                          ? formatNaira(Number(active.earnings_amount))
-                          : "—"}
-                      </p>
-                      {active.commission_pct_at_close ? (
-                        <p className="text-xs text-[var(--muted-foreground)]">
-                          Rate at close: {active.commission_pct_at_close}%
+                    ) : null}
+                  </CardContent>
+                </Card>
+
+                <PayoutWithAttendance
+                  data={{
+                    expectedPayout: Number(active.earnings_amount ?? 0),
+                    actualPayout: resolveActualPayout(
+                      Number(active.earnings_amount ?? 0),
+                      active.net_earnings_amount != null
+                        ? Number(active.net_earnings_amount)
+                        : null,
+                      Number(active.attendance_deductions_total ?? 0),
+                    ),
+                    attendanceDeductionsTotal: Number(active.attendance_deductions_total ?? 0),
+                    lateDeductionsTotal: Number(active.attendance_late_deductions_total ?? 0),
+                    absenceDeductionsTotal: Number(active.attendance_absence_deductions_total ?? 0),
+                  }}
+                  expectedLabel={expectedPayoutLabel}
+                  actualLabel={actualPayoutLabel}
+                />
+
+                {(active.attendance_deduction_items?.length ?? 0) > 0 ||
+                Number(active.attendance_deductions_total ?? 0) > 0 ? (
+                  <div className="space-y-3 rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--card)] px-4 py-4">
+                    <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
+                      Attendance penalties
+                    </p>
+                    <div className="grid gap-2 text-sm sm:grid-cols-3">
+                      <div>
+                        <p className="text-[var(--muted-foreground)]">Late</p>
+                        <p className="font-medium tabular-nums">
+                          {formatNaira(Number(active.attendance_late_deductions_total ?? 0))}
                         </p>
-                      ) : null}
-                    </CardContent>
-                  </Card>
-                </div>
+                      </div>
+                      <div>
+                        <p className="text-[var(--muted-foreground)]">Absence</p>
+                        <p className="font-medium tabular-nums">
+                          {formatNaira(Number(active.attendance_absence_deductions_total ?? 0))}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-[var(--muted-foreground)]">Total</p>
+                        <p className="font-semibold tabular-nums text-amber-800 dark:text-amber-200">
+                          {formatNaira(Number(active.attendance_deductions_total ?? 0))}
+                        </p>
+                      </div>
+                    </div>
+                    {active.attendance_deduction_items?.length ? (
+                      <ul className="divide-y divide-[var(--border)]/70 border-t border-[var(--border)]/70 pt-2">
+                        {active.attendance_deduction_items.map((item) => (
+                          <li
+                            key={`${item.business_date}-${item.deduction_reason}`}
+                            className="flex items-center justify-between gap-3 py-2 text-xs"
+                          >
+                            <div>
+                              <p className="font-medium text-[var(--foreground)]">
+                                {new Date(item.business_date).toLocaleDateString("en-NG", {
+                                  month: "short",
+                                  day: "numeric",
+                                })}
+                              </p>
+                              <p className="capitalize text-[var(--muted-foreground)]">
+                                {item.deduction_reason ?? item.status}
+                              </p>
+                            </div>
+                            <span className="font-medium tabular-nums">
+                              {formatNaira(Number(item.deduction_amount))}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                    {active.net_earnings_amount ? (
+                      <p className="border-t border-[var(--border)]/70 pt-3 text-sm">
+                        {actualPayoutLabel}:{" "}
+                        <span className="font-semibold tabular-nums text-emerald-700 dark:text-emerald-300">
+                          {formatNaira(Number(active.net_earnings_amount))}
+                        </span>
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
 
                 <div className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--card)] px-4 py-4">
                   <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request
@@ -13,8 +14,9 @@ from app.models.financial_month import FinancialMonth
 from app.schemas.financial_month import FinancialMonthCloseBody
 from app.schemas.operations import CommissionMarkPaidBody
 from app.services import commission_service, month_lifecycle_service
+from app.services.attendance_service import month_deduction_summary
 from app.services.ledger_service import barber_month_revenue_buckets, barber_operational_month_keys
-from app.services.payroll_service import expected_month_payout
+from app.services.payroll_service import expected_month_payout, month_payout_breakdown
 
 router = APIRouter(prefix="/finance", tags=["finance"])
 
@@ -134,6 +136,19 @@ def _personal_month_row(
         if (year, month) < (today.year, today.month):
             inferred_state = "locked"
 
+    payout, absences_synced = month_payout_breakdown(
+        db,
+        user,
+        year=year,
+        month=month,
+        settled=approved,
+    )
+    if absences_synced:
+        db.commit()
+    deductions_total = Decimal(payout["attendance_deductions_total"])
+    gross_earnings = Decimal(earnings) if not isinstance(earnings, Decimal) else earnings
+    net_earnings = Decimal(payout["actual_payout_on_approved"])
+
     return {
         "id": str(financial_month.id) if financial_month else f"{year}-{month:02d}",
         "year": year,
@@ -151,6 +166,13 @@ def _personal_month_row(
         else None,
         "approved_total": str(approved),
         "earnings_amount": str(earnings),
+        "attendance_deductions_total": str(deductions_total),
+        "attendance_late_deductions_total": payout["attendance_late_deductions_total"],
+        "attendance_absence_deductions_total": payout["attendance_absence_deductions_total"],
+        "attendance_deduction_items": month_deduction_summary(
+            db, user_id=user.id, year=year, month=month
+        )["items"],
+        "net_earnings_amount": str(net_earnings),
         "commission_pct_at_close": str(stmt.commission_pct_at_close) if stmt else None,
         "statement_id": statement_id,
         "payout_state": payout_state,

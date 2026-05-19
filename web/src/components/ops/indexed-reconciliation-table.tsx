@@ -3,7 +3,9 @@
 import * as React from "react";
 import { ChevronDown } from "lucide-react";
 
+import { LedgerVoidBadge } from "@/components/ops/ledger-void-badge";
 import { ReconciliationComparisonBadge } from "@/components/ops/reconciliation-comparison-badge";
+import { Button } from "@/components/ui/button";
 import type { ReconciliationComparisonStatus } from "@/lib/reconciliation-status";
 import { rowHighlightFromComparison } from "@/lib/reconciliation-status";
 import type { ReconciliationWorkspaceRow } from "@/lib/api";
@@ -108,12 +110,14 @@ function ReconciliationRow({
   primarySide,
   leftLabel,
   rightLabel,
+  onVoidRequest,
 }: {
   row: IndexedReconciliationRow;
   showBusinessDate: boolean;
   primarySide: ReconciliationViewerSide;
   leftLabel: string;
   rightLabel: string;
+  onVoidRequest?: (row: IndexedReconciliationRow) => void;
 }) {
   const [expanded, setExpanded] = React.useState(false);
   const status = row.comparison_status as ReconciliationComparisonStatus;
@@ -146,11 +150,22 @@ function ReconciliationRow({
   const rightAuditLabel = primarySide === "employee" ? "Manager record" : "Employee record";
   const leftSide = primarySide === "employee" ? row.employee : row.manager;
   const rightSide = primarySide === "employee" ? row.manager : row.employee;
+  const employeeVoided =
+    row.employee?.is_voided ||
+    status === "employee_record_voided" ||
+    row.employee?.record_lifecycle === "deleted";
+  const canVoidEmployee =
+    primarySide === "employee" &&
+    onVoidRequest &&
+    row.employee_entry_id &&
+    !employeeVoided &&
+    status !== "pending_delete_confirmation";
 
   return (
     <li
       className={cn(
         "border-b border-[var(--border)]/70 last:border-b-0 transition-colors",
+        employeeVoided && "opacity-55",
         rowHighlightFromComparison(status),
         expanded && "bg-[var(--muted)]/15",
       )}
@@ -240,8 +255,22 @@ function ReconciliationRow({
               <p className="mt-1 capitalize text-[var(--muted-foreground)]">
                 {row.reconciliation_status?.replace(/_/g, " ") ?? "—"}
               </p>
+              {row.employee?.is_voided || row.employee?.pending_void_reason ? (
+                <div className="mt-2">
+                  <LedgerVoidBadge
+                    meta={{
+                      isVoided: row.employee?.is_voided,
+                      voidReason: row.employee?.void_reason,
+                      pendingVoidReason: row.employee?.pending_void_reason,
+                    }}
+                  />
+                </div>
+              ) : null}
             </AuditField>
           </div>
+          {canVoidEmployee ? (
+            <VoidActionBlock onVoid={() => onVoidRequest?.(row)} />
+          ) : null}
           <p className="mt-2 font-mono text-[10px] text-[var(--muted-foreground)]">
             {row.employee_entry_id ? `E:${row.employee_entry_id}` : ""}
             {row.employee_entry_id && row.manager_entry_id ? " · " : ""}
@@ -250,6 +279,25 @@ function ReconciliationRow({
         </div>
       ) : null}
     </li>
+  );
+}
+
+function VoidActionBlock({ onVoid }: { onVoid: () => void }) {
+  return (
+    <div className="mt-3 border-t border-[var(--border)]/50 pt-2">
+      <Button
+        type="button"
+        size="sm"
+        variant="outline"
+        className="rounded-full border-red-500/30 text-xs text-red-600 hover:bg-red-500/5 dark:text-red-400"
+        onClick={(e) => {
+          e.stopPropagation();
+          onVoid();
+        }}
+      >
+        Void record
+      </Button>
+    </div>
   );
 }
 
@@ -262,6 +310,7 @@ export function IndexedReconciliationTable({
   managerColumnLabel = "Manager",
   emptyTitle = "No service entries",
   emptyBody = "Indexed reconciliation rows appear here as services are recorded and reviewed.",
+  onVoidRequest,
 }: {
   rows: IndexedReconciliationRow[];
   loading: boolean;
@@ -272,6 +321,7 @@ export function IndexedReconciliationTable({
   managerColumnLabel?: string;
   emptyTitle?: string;
   emptyBody?: string;
+  onVoidRequest?: (row: IndexedReconciliationRow) => void;
 }) {
   const leftLabel = primarySide === "employee" ? employeeColumnLabel : managerColumnLabel;
   const rightLabel = primarySide === "employee" ? managerColumnLabel : employeeColumnLabel;
@@ -314,6 +364,7 @@ export function IndexedReconciliationTable({
                 primarySide={primarySide}
                 leftLabel={leftLabel}
                 rightLabel={rightLabel}
+                onVoidRequest={onVoidRequest}
               />
             ))}
           </ul>

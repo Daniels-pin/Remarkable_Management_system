@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.core.exceptions import ConflictError, ForbiddenError, NotFoundError, ValidationAppError
 from app.models.barber_sequence_counter import BarberSequenceCounter
+from app.models.shop_ledger_sequence_counter import ShopLedgerSequenceCounter
 from app.models.enums import (
     LedgerEntryType,
     LedgerReconciliationStatus,
@@ -25,7 +26,7 @@ from app.models.financial_month import FinancialMonth
 from app.models.ledger import LedgerEntry
 from app.models.user import User
 from app.services import audit_service, catalog_service
-from app.services.business_time import barber_may_edit_entry, business_date_for_instant
+from app.services.business_time import barber_may_edit_entry, business_date_for_instant, shop_tz
 from app.services.financial_month_util import (
     require_financial_month_for_new_entry,
     require_writable_month_for_entry,
@@ -41,12 +42,36 @@ class ReconciliationSlot:
     manager: LedgerEntry | None
 
 
-def _service_base_filter(db: Session, *, barber_user_id: uuid.UUID):
-    return db.query(LedgerEntry).filter(
+def _is_voided(row: LedgerEntry | None) -> bool:
+    return row is not None and row.record_lifecycle == RecordLifecycleState.DELETED
+
+
+def _has_pending_void(row: LedgerEntry | None) -> bool:
+    return (
+        row is not None
+        and row.reconciliation_status == LedgerReconciliationStatus.PENDING_DELETE_CONFIRMATION
+    )
+
+
+def _service_base_filter(
+    db: Session,
+    *,
+    barber_user_id: uuid.UUID,
+    include_voided: bool = False,
+):
+    q = db.query(LedgerEntry).filter(
         LedgerEntry.employee_user_id == barber_user_id,
         LedgerEntry.entry_type == LedgerEntryType.SERVICE,
-        LedgerEntry.record_lifecycle == RecordLifecycleState.ACTIVE,
     )
+    if include_voided:
+        q = q.filter(
+            LedgerEntry.record_lifecycle.in_(
+                (RecordLifecycleState.ACTIVE, RecordLifecycleState.DELETED)
+            )
+        )
+    else:
+        q = q.filter(LedgerEntry.record_lifecycle == RecordLifecycleState.ACTIVE)
+    return q
 
 
 def _stream_filter(q, stream: LedgerRecordStream):
@@ -80,6 +105,88 @@ def allocate_next_sequence_index(
     return idx
 
 
+def allocate_shop_sequence_index(
+    db: Session,
+    *,
+    financial_month_id: uuid.UUID,
+    entry_type: LedgerEntryType,
+) -> int:
+    """Allocate the next global shop index for sales or expenses in a financial month."""
+    if entry_type not in (LedgerEntryType.SALE, LedgerEntryType.EXPENSE):
+        raise ValidationAppError(
+            "Shop sequence applies only to sales and expenses.",
+            code="INVALID_ENTRY_TYPE",
+        )
+    counter = db.get(ShopLedgerSequenceCounter, (financial_month_id, entry_type))
+    if counter is None:
+        counter = ShopLedgerSequenceCounter(
+            financial_month_id=financial_month_id,
+            entry_type=entry_type,
+            next_index=1,
+        )
+        db.add(counter)
+        db.flush()
+    idx = counter.next_index
+    counter.next_index = idx + 1
+    db.add(counter)
+    return idx
+
+
+def format_ledger_index_label(
+    entry_type: LedgerEntryType,
+    index: int | None,
+) -> str | None:
+    """Human index label: services #001, sales S-001, expenses E-001."""
+    if index is None:
+        return None
+    if entry_type == LedgerEntryType.SALE:
+        return f"S-{index:03d}"
+    if entry_type == LedgerEntryType.EXPENSE:
+        return f"E-{index:03d}"
+    if entry_type == LedgerEntryType.SERVICE:
+        return f"#{index:03d}"
+    return str(index)
+
+
+def apply_auto_match_if_eligible(
+    db: Session,
+    *,
+    employee: LedgerEntry | None,
+    manager: LedgerEntry | None,
+) -> bool:
+    """
+    When both streams exist at the same index with equal amounts, mark both approved.
+
+    Returns True when auto-match was applied.
+    """
+    if employee is None or manager is None:
+        return False
+    if _is_voided(employee) or _is_voided(manager):
+        return False
+    if _has_pending_void(employee):
+        return False
+    if employee.amount != manager.amount:
+        return False
+    now = datetime.now(UTC)
+    changed = False
+    for row in (employee, manager):
+        if row.reconciliation_status in {
+            None,
+            LedgerReconciliationStatus.PENDING,
+        }:
+            row.reconciliation_status = LedgerReconciliationStatus.APPROVED
+            row.approved_at = now
+            db.add(row)
+            changed = True
+    return changed
+
+
+def try_auto_match_for_service_row(db: Session, row: LedgerEntry) -> bool:
+    """Run auto-match after creating or updating a service stream row."""
+    employee, manager = paired_rows_for_service(db, row)
+    return apply_auto_match_if_eligible(db, employee=employee, manager=manager)
+
+
 def is_official_manager_service_row(row: LedgerEntry) -> bool:
     """True when a service line belongs on the manager/admin operational ledger."""
     return (
@@ -106,10 +213,24 @@ def _pair_reconciliation_status(
     if employee is None and manager is None:
         return "waiting_for_reconciliation"
 
+    if _has_pending_void(employee):
+        return "pending_delete_confirmation"
+
+    if _is_voided(employee) and manager is not None and not _is_voided(manager):
+        return "employee_record_voided"
+    if _is_voided(manager) and employee is not None and not _is_voided(employee):
+        return "manager_record_voided"
+    if _is_voided(employee) and _is_voided(manager):
+        return "employee_record_voided"
+
     if employee is None:
+        if manager is not None and _is_voided(manager):
+            return "manager_record_voided"
         return "missing_employee_entry"
 
     if manager is None:
+        if _is_voided(employee):
+            return "employee_record_voided"
         return "missing_manager_entry"
 
     emp_amt = _stream_amount(employee)
@@ -120,6 +241,95 @@ def _pair_reconciliation_status(
     return "matched"
 
 
+# Pair states excluded from shop-wide revenue, payroll inputs, and service counts.
+_FINANCIALLY_EXCLUDED_COMPARISONS = frozenset(
+    {
+        "employee_record_voided",
+        "manager_record_voided",
+        "pending_delete_confirmation",
+    }
+)
+
+# Manager-stream rows that contribute to official shop service revenue.
+_OFFICIAL_REVENUE_COMPARISONS = frozenset({"matched", "missing_employee_entry"})
+
+
+def row_counts_toward_official_revenue(db: Session, row: LedgerEntry) -> bool:
+    """True when a ledger row should affect active operational service revenue."""
+    if row.entry_type != LedgerEntryType.SERVICE:
+        return False
+    if row.record_stream != LedgerRecordStream.MANAGER:
+        return False
+    if row.record_lifecycle != RecordLifecycleState.ACTIVE:
+        return False
+    status = comparison_status_for_service_row(db, row)
+    return status in _OFFICIAL_REVENUE_COMPARISONS
+
+
+def official_services_revenue_in_range(
+    db: Session,
+    *,
+    start: datetime,
+    end: datetime,
+) -> Decimal:
+    """
+    Sum manager-stream service revenue for the period, excluding voided pairs and
+    pending void requests (aligned with barber approved/pending bucket rules).
+    """
+    manager_rows = (
+        db.query(LedgerEntry)
+        .filter(
+            LedgerEntry.record_lifecycle == RecordLifecycleState.ACTIVE,
+            LedgerEntry.entry_type == LedgerEntryType.SERVICE,
+            LedgerEntry.record_stream == LedgerRecordStream.MANAGER,
+            LedgerEntry.occurred_at >= start,
+            LedgerEntry.occurred_at <= end,
+        )
+        .all()
+    )
+    if not manager_rows:
+        return Decimal(0)
+
+    status_by_id = comparison_status_map_for_rows(db, manager_rows)
+    total = Decimal(0)
+    for row in manager_rows:
+        if status_by_id.get(row.id) in _OFFICIAL_REVENUE_COMPARISONS:
+            total += row.amount
+    return total
+
+
+def official_services_count_for_calendar_month(
+    db: Session,
+    *,
+    year: int,
+    month: int,
+) -> int:
+    """Active official service lines in a calendar month (void/pending-void excluded)."""
+    tz = shop_tz()
+    start = datetime(year, month, 1, tzinfo=tz)
+    if month == 12:
+        end = datetime(year + 1, 1, 1, tzinfo=tz) - timedelta(microseconds=1)
+    else:
+        end = datetime(year, month + 1, 1, tzinfo=tz) - timedelta(microseconds=1)
+    manager_rows = (
+        db.query(LedgerEntry)
+        .filter(
+            LedgerEntry.record_lifecycle == RecordLifecycleState.ACTIVE,
+            LedgerEntry.entry_type == LedgerEntryType.SERVICE,
+            LedgerEntry.record_stream == LedgerRecordStream.MANAGER,
+            LedgerEntry.occurred_at >= start,
+            LedgerEntry.occurred_at <= end,
+        )
+        .all()
+    )
+    if not manager_rows:
+        return 0
+    status_by_id = comparison_status_map_for_rows(db, manager_rows)
+    return sum(
+        1 for row in manager_rows if status_by_id.get(row.id) in _OFFICIAL_REVENUE_COMPARISONS
+    )
+
+
 def find_employee_row_at_index(
     db: Session,
     *,
@@ -128,7 +338,10 @@ def find_employee_row_at_index(
     index: int,
 ) -> LedgerEntry | None:
     return (
-        _stream_filter(_service_base_filter(db, barber_user_id=barber_user_id), LedgerRecordStream.EMPLOYEE)
+        _stream_filter(
+            _service_base_filter(db, barber_user_id=barber_user_id, include_voided=True),
+            LedgerRecordStream.EMPLOYEE,
+        )
         .filter(
             LedgerEntry.financial_month_id == financial_month_id,
             LedgerEntry.barber_sequence_index == index,
@@ -213,7 +426,10 @@ def comparison_status_map_for_rows(db: Session, rows: list[LedgerEntry]) -> dict
     for (barber_id, fm_id), indexes in indexes_by_scope.items():
         idx_list = list(indexes)
         for r in (
-            _stream_filter(_service_base_filter(db, barber_user_id=barber_id), LedgerRecordStream.EMPLOYEE)
+            _stream_filter(
+                _service_base_filter(db, barber_user_id=barber_id, include_voided=True),
+                LedgerRecordStream.EMPLOYEE,
+            )
             .filter(
                 LedgerEntry.financial_month_id == fm_id,
                 LedgerEntry.barber_sequence_index.in_(idx_list),
@@ -222,7 +438,10 @@ def comparison_status_map_for_rows(db: Session, rows: list[LedgerEntry]) -> dict
         ):
             employee_by_slot[(barber_id, fm_id, r.barber_sequence_index)] = r
         for r in (
-            _stream_filter(_service_base_filter(db, barber_user_id=barber_id), LedgerRecordStream.MANAGER)
+            _stream_filter(
+                _service_base_filter(db, barber_user_id=barber_id, include_voided=True),
+                LedgerRecordStream.MANAGER,
+            )
             .filter(
                 LedgerEntry.financial_month_id == fm_id,
                 LedgerEntry.barber_sequence_index.in_(idx_list),
@@ -307,7 +526,7 @@ def _slots_for_calendar_month(
         fm_filter = LedgerEntry.financial_month_id.in_(fm_ids)
         employee_rows = (
             _stream_filter(
-                _service_base_filter(db, barber_user_id=barber_user_id),
+                _service_base_filter(db, barber_user_id=barber_user_id, include_voided=True),
                 LedgerRecordStream.EMPLOYEE,
             )
             .filter(fm_filter)
@@ -315,7 +534,7 @@ def _slots_for_calendar_month(
         )
         manager_rows = (
             _stream_filter(
-                _service_base_filter(db, barber_user_id=barber_user_id),
+                _service_base_filter(db, barber_user_id=barber_user_id, include_voided=True),
                 LedgerRecordStream.MANAGER,
             )
             .filter(fm_filter)
@@ -328,12 +547,18 @@ def _slots_for_calendar_month(
         extract("month", LedgerEntry.business_date) == month,
     )
     employee_rows = (
-        _stream_filter(_service_base_filter(db, barber_user_id=barber_user_id), LedgerRecordStream.EMPLOYEE)
+        _stream_filter(
+            _service_base_filter(db, barber_user_id=barber_user_id, include_voided=True),
+            LedgerRecordStream.EMPLOYEE,
+        )
         .filter(*month_filter)
         .all()
     )
     manager_rows = (
-        _stream_filter(_service_base_filter(db, barber_user_id=barber_user_id), LedgerRecordStream.MANAGER)
+        _stream_filter(
+            _service_base_filter(db, barber_user_id=barber_user_id, include_voided=True),
+            LedgerRecordStream.MANAGER,
+        )
         .filter(*month_filter)
         .all()
     )
@@ -348,12 +573,18 @@ def _slots_for_business_day(
 ) -> list[ReconciliationSlot]:
     """Day workspace: indexes where either stream has activity on this business day."""
     employee_day = (
-        _stream_filter(_service_base_filter(db, barber_user_id=barber_user_id), LedgerRecordStream.EMPLOYEE)
+        _stream_filter(
+            _service_base_filter(db, barber_user_id=barber_user_id, include_voided=True),
+            LedgerRecordStream.EMPLOYEE,
+        )
         .filter(LedgerEntry.business_date == business_day)
         .all()
     )
     manager_day = (
-        _stream_filter(_service_base_filter(db, barber_user_id=barber_user_id), LedgerRecordStream.MANAGER)
+        _stream_filter(
+            _service_base_filter(db, barber_user_id=barber_user_id, include_voided=True),
+            LedgerRecordStream.MANAGER,
+        )
         .filter(LedgerEntry.business_date == business_day)
         .all()
     )
@@ -366,12 +597,18 @@ def _slots_for_business_day(
         return []
 
     employee_rows = (
-        _stream_filter(_service_base_filter(db, barber_user_id=barber_user_id), LedgerRecordStream.EMPLOYEE)
+        _stream_filter(
+            _service_base_filter(db, barber_user_id=barber_user_id, include_voided=True),
+            LedgerRecordStream.EMPLOYEE,
+        )
         .filter(LedgerEntry.barber_sequence_index.in_(indexes))
         .all()
     )
     manager_rows = (
-        _stream_filter(_service_base_filter(db, barber_user_id=barber_user_id), LedgerRecordStream.MANAGER)
+        _stream_filter(
+            _service_base_filter(db, barber_user_id=barber_user_id, include_voided=True),
+            LedgerRecordStream.MANAGER,
+        )
         .filter(LedgerEntry.barber_sequence_index.in_(indexes))
         .all()
     )
@@ -387,7 +624,10 @@ def find_manager_row_at_index(
     index: int,
 ) -> LedgerEntry | None:
     return (
-        _stream_filter(_service_base_filter(db, barber_user_id=barber_user_id), LedgerRecordStream.MANAGER)
+        _stream_filter(
+            _service_base_filter(db, barber_user_id=barber_user_id, include_voided=True),
+            LedgerRecordStream.MANAGER,
+        )
         .filter(
             LedgerEntry.financial_month_id == financial_month_id,
             LedgerEntry.barber_sequence_index == index,
@@ -422,6 +662,20 @@ def build_comparison_payload(
             "reconciliation_status": str(row.reconciliation_status)
             if row.reconciliation_status
             else None,
+            "record_lifecycle": str(row.record_lifecycle),
+            "is_voided": _is_voided(row),
+            "void_reason": row.void_reason,
+            "voided_at": row.deleted_at.isoformat() if row.deleted_at else None,
+            "voided_by_user_id": str(row.deleted_by_user_id) if row.deleted_by_user_id else None,
+            "pending_void_reason": row.pending_void_reason,
+            "pending_void_by_user_id": (
+                str(row.pending_void_by_user_id) if row.pending_void_by_user_id else None
+            ),
+            "pending_void_requested_at": (
+                row.pending_void_requested_at.isoformat()
+                if row.pending_void_requested_at
+                else None
+            ),
         }
 
     emp_side = _side(employee)
@@ -632,6 +886,7 @@ def create_manager_official_service_line(
     )
     db.add(row)
     db.flush()
+    try_auto_match_for_service_row(db, row)
     audit_service.write_audit_log(
         db,
         actor_user_id=manager.id,
@@ -673,6 +928,8 @@ def upsert_manager_row_for_employee_index(
         if summary_id:
             existing.barber_daily_summary_id = summary_id
         db.add(existing)
+        db.flush()
+        try_auto_match_for_service_row(db, existing)
         return existing
 
     row = LedgerEntry(
@@ -695,7 +952,267 @@ def upsert_manager_row_for_employee_index(
     )
     db.add(row)
     db.flush()
+    try_auto_match_for_service_row(db, row)
     return row
+
+
+def match_pending_employee_entry(
+    db: Session,
+    *,
+    manager: User,
+    employee_entry_id: uuid.UUID,
+    payment_method: Any,
+) -> LedgerEntry:
+    """
+    Create the manager stream row at the employee's index (manual reconciliation match).
+
+    Preserves index, employee, amount, and service type; manager supplies payment method.
+    """
+    if manager.role not in {UserRole.MANAGER, UserRole.ADMIN}:
+        raise ForbiddenError("Managers or admins only.", code="FORBIDDEN")
+
+    employee_row = db.get(LedgerEntry, employee_entry_id)
+    if employee_row is None or employee_row.record_lifecycle != RecordLifecycleState.ACTIVE:
+        raise NotFoundError("Entry not found.", code="LEDGER_NOT_FOUND")
+    if employee_row.record_stream != LedgerRecordStream.EMPLOYEE:
+        raise ValidationAppError(
+            "Only employee stream entries can be matched this way.",
+            code="LEDGER_WRONG_STREAM",
+        )
+    if employee_row.entry_type != LedgerEntryType.SERVICE:
+        raise ValidationAppError("Only service entries reconcile.", code="LEDGER_WRONG_TYPE")
+
+    existing_mgr = find_manager_row_at_index(
+        db,
+        barber_user_id=employee_row.employee_user_id,  # type: ignore[arg-type]
+        financial_month_id=employee_row.financial_month_id,
+        index=employee_row.barber_sequence_index,  # type: ignore[arg-type]
+    )
+    if existing_mgr is not None:
+        raise ConflictError(
+            "A manager record already exists for this index.",
+            code="MANAGER_ROW_EXISTS",
+        )
+
+    mgr = upsert_manager_row_for_employee_index(
+        db,
+        manager=manager,
+        employee_row=employee_row,
+        amount=employee_row.amount,
+        summary_id=None,
+    )
+    mgr.payment_method = payment_method
+    mgr.reconciliation_status = LedgerReconciliationStatus.APPROVED
+    mgr.approved_at = datetime.now(UTC)
+    employee_row.reconciliation_status = LedgerReconciliationStatus.APPROVED
+    employee_row.approved_at = datetime.now(UTC)
+    db.add(mgr)
+    db.add(employee_row)
+    db.flush()
+
+    audit_service.write_audit_log(
+        db,
+        actor_user_id=manager.id,
+        impersonator_user_id=None,
+        action="ledger.manual_match",
+        entity_type="ledger_entry",
+        entity_id=str(mgr.id),
+        message=f"Matched employee index #{employee_row.barber_sequence_index:03d}",
+        payload={
+            "employee_entry_id": str(employee_row.id),
+            "barber_sequence_index": employee_row.barber_sequence_index,
+        },
+        ip_address=None,
+    )
+    return mgr
+
+
+def match_all_pending_employee_entries(
+    db: Session,
+    *,
+    manager: User,
+    payment_method: Any,
+    limit: int = 200,
+) -> list[LedgerEntry]:
+    """Match every employee-only pending index (shop-wide), up to ``limit`` rows."""
+    if manager.role not in {UserRole.MANAGER, UserRole.ADMIN}:
+        raise ForbiddenError("Managers or admins only.", code="FORBIDDEN")
+
+    employee_rows = (
+        _stream_filter(
+            db.query(LedgerEntry).filter(
+                LedgerEntry.record_lifecycle == RecordLifecycleState.ACTIVE,
+                LedgerEntry.entry_type == LedgerEntryType.SERVICE,
+            ),
+            LedgerRecordStream.EMPLOYEE,
+        )
+        .order_by(LedgerEntry.occurred_at.desc())
+        .limit(1000)
+        .all()
+    )
+    comparison = comparison_status_map_for_rows(db, employee_rows)
+    matched: list[LedgerEntry] = []
+    seen: set[tuple[uuid.UUID, uuid.UUID, int]] = set()
+
+    for row in employee_rows:
+        if row.barber_sequence_index is None or row.employee_user_id is None:
+            continue
+        if comparison.get(row.id) != "missing_manager_entry":
+            continue
+        key = (row.employee_user_id, row.financial_month_id, row.barber_sequence_index)
+        if key in seen:
+            continue
+        seen.add(key)
+        mgr = match_pending_employee_entry(
+            db,
+            manager=manager,
+            employee_entry_id=row.id,
+            payment_method=payment_method,
+        )
+        matched.append(mgr)
+        if len(matched) >= limit:
+            break
+
+    return matched
+
+
+def list_reconciliation_inbox(
+    db: Session,
+    *,
+    inbox_filter: str,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    """
+    Shop-wide reconciliation inbox: one row per index slot.
+
+    ``inbox_filter``: ``pending`` (one-sided) or ``mismatch`` (both sides, amounts differ).
+    """
+    if inbox_filter not in {"pending", "mismatch"}:
+        raise ValidationAppError("Invalid inbox filter.", code="INVALID_FILTER")
+
+    target_pending = {"missing_manager_entry", "missing_employee_entry"}
+    target_mismatch = {"mismatch"}
+
+    service_rows = (
+        db.query(LedgerEntry)
+        .filter(
+            LedgerEntry.record_lifecycle == RecordLifecycleState.ACTIVE,
+            LedgerEntry.entry_type == LedgerEntryType.SERVICE,
+            LedgerEntry.record_stream.isnot(None),
+            LedgerEntry.barber_sequence_index.isnot(None),
+            LedgerEntry.employee_user_id.isnot(None),
+        )
+        .order_by(LedgerEntry.occurred_at.desc())
+        .limit(1500)
+        .all()
+    )
+    comparison = comparison_status_map_for_rows(db, service_rows)
+    type_ids: set[uuid.UUID] = set()
+    seen_slots: set[tuple[uuid.UUID, uuid.UUID, int]] = set()
+    slots: list[ReconciliationSlot] = []
+
+    for row in service_rows:
+        if row.barber_sequence_index is None or row.employee_user_id is None:
+            continue
+        slot_key = (row.employee_user_id, row.financial_month_id, row.barber_sequence_index)
+        if slot_key in seen_slots:
+            continue
+        comp = comparison.get(row.id)
+        if inbox_filter == "pending" and comp not in target_pending:
+            continue
+        if inbox_filter == "mismatch" and comp not in target_mismatch:
+            continue
+        seen_slots.add(slot_key)
+        employee = find_employee_row_at_index(
+            db,
+            barber_user_id=row.employee_user_id,
+            financial_month_id=row.financial_month_id,
+            index=row.barber_sequence_index,
+        )
+        manager = find_manager_row_at_index(
+            db,
+            barber_user_id=row.employee_user_id,
+            financial_month_id=row.financial_month_id,
+            index=row.barber_sequence_index,
+        )
+        slots.append(
+            ReconciliationSlot(
+                index=row.barber_sequence_index,
+                employee=employee,
+                manager=manager,
+            )
+        )
+        for side in (employee, manager):
+            if side and side.service_type_id:
+                type_ids.add(side.service_type_id)
+        if len(slots) >= limit:
+            break
+
+    from sqlalchemy.orm import joinedload
+
+    from app.models.user import User as UserModel
+
+    barber_ids = {
+        (s.employee or s.manager).employee_user_id  # type: ignore[union-attr]
+        for s in slots
+        if s.employee or s.manager
+    }
+    users = (
+        db.query(UserModel)
+        .options(joinedload(UserModel.profile))
+        .filter(UserModel.id.in_(barber_ids))
+        .all()
+        if barber_ids
+        else []
+    )
+    user_labels: dict[uuid.UUID, str] = {}
+    for u in users:
+        if u.profile and u.profile.full_name:
+            user_labels[u.id] = u.profile.full_name
+        else:
+            user_labels[u.id] = f"@{u.username}"
+
+    names = _service_type_names(db, type_ids)
+    items: list[dict[str, Any]] = []
+    for slot in slots:
+        payload = build_comparison_payload(slot, service_names=names)
+        primary = slot.employee or slot.manager
+        barber_id = primary.employee_user_id if primary else None
+        payload["employee_user_id"] = str(barber_id) if barber_id else None
+        payload["employee_name"] = user_labels.get(barber_id) if barber_id else None
+        payload["entry_type"] = "service"
+        items.append(payload)
+    return items
+
+
+def resolve_mismatch_use_employee_amount(
+    db: Session,
+    *,
+    manager: User,
+    employee_entry_id: uuid.UUID,
+) -> tuple[LedgerEntry, LedgerEntry]:
+    """Align manager stream amount to employee and auto-approve when matched."""
+    if manager.role not in {UserRole.MANAGER, UserRole.ADMIN}:
+        raise ForbiddenError("Managers or admins only.", code="FORBIDDEN")
+
+    employee_row = db.get(LedgerEntry, employee_entry_id)
+    if employee_row is None or employee_row.record_stream != LedgerRecordStream.EMPLOYEE:
+        raise NotFoundError("Employee entry not found.", code="LEDGER_NOT_FOUND")
+
+    mgr = find_manager_row_at_index(
+        db,
+        barber_user_id=employee_row.employee_user_id,  # type: ignore[arg-type]
+        financial_month_id=employee_row.financial_month_id,
+        index=employee_row.barber_sequence_index,  # type: ignore[arg-type]
+    )
+    if mgr is None:
+        raise NotFoundError("Manager entry not found for this index.", code="MANAGER_ROW_MISSING")
+
+    mgr.amount = employee_row.amount
+    db.add(mgr)
+    apply_auto_match_if_eligible(db, employee=employee_row, manager=mgr)
+    db.flush()
+    return employee_row, mgr
 
 
 def list_pending_reconciliation_entries(
@@ -777,6 +1294,7 @@ def create_barber_service_entry(
     )
     db.add(row)
     db.flush()
+    try_auto_match_for_service_row(db, row)
 
     audit_service.write_audit_log(
         db,
@@ -870,27 +1388,132 @@ def update_barber_service_entry(
 
     db.add(row)
     db.flush()
+    try_auto_match_for_service_row(db, row)
     return row
 
 
-def soft_delete_barber_entry(
+def _user_display_label(db: Session, user_id: uuid.UUID | None) -> str | None:
+    if not user_id:
+        return None
+    u = db.get(User, user_id)
+    if u is None:
+        return None
+    if u.profile is not None and u.profile.full_name:
+        return u.profile.full_name
+    return f"@{u.username}"
+
+
+def _assert_entry_mutable_for_void_or_edit(row: LedgerEntry) -> None:
+    if row.record_lifecycle != RecordLifecycleState.ACTIVE:
+        raise ConflictError("Record is already voided or purged.", code="LEDGER_NOT_ACTIVE")
+    if row.reconciliation_status in {
+        LedgerReconciliationStatus.SETTLED,
+        LedgerReconciliationStatus.LOCKED,
+    }:
+        raise ConflictError(
+            "Cannot modify settled or locked records.", code="LEDGER_LOCKED"
+        )
+
+
+def _void_active_service_pair(
+    db: Session,
+    *,
+    anchor_row: LedgerEntry,
+    actor: User,
+    reason: str,
+    impersonator_id: uuid.UUID | None,
+    ip_address: str | None,
+) -> LedgerEntry:
+    """Void every active stream row at the same service index (employee + manager)."""
+    employee, manager = paired_rows_for_service(db, anchor_row)
+    targets: list[LedgerEntry] = []
+    for candidate in (employee, manager):
+        if candidate is not None and candidate.record_lifecycle == RecordLifecycleState.ACTIVE:
+            targets.append(candidate)
+    if not targets:
+        if anchor_row.record_lifecycle == RecordLifecycleState.ACTIVE:
+            targets = [anchor_row]
+        else:
+            raise ConflictError("Record is already voided or purged.", code="LEDGER_NOT_ACTIVE")
+
+    for target in targets:
+        _finalize_void(
+            db,
+            row=target,
+            actor=actor,
+            reason=reason,
+            impersonator_id=impersonator_id,
+            ip_address=ip_address,
+        )
+    db.flush()
+    _refresh_daily_summary_after_service_void(db, anchor_row)
+    return anchor_row if anchor_row in targets else targets[0]
+
+
+def _refresh_daily_summary_after_service_void(db: Session, row: LedgerEntry) -> None:
+    if row.entry_type != LedgerEntryType.SERVICE:
+        return
+    if row.business_date is None or row.employee_user_id is None:
+        return
+    from app.services import reconciliation_service
+
+    reconciliation_service.refresh_daily_summary_totals_from_ledger(
+        db,
+        barber_user_id=row.employee_user_id,
+        business_day=row.business_date,
+    )
+
+
+def _finalize_void(
+    db: Session,
+    *,
+    row: LedgerEntry,
+    actor: User,
+    reason: str,
+    impersonator_id: uuid.UUID | None,
+    ip_address: str | None,
+) -> None:
+    now = datetime.now(UTC)
+    row.record_lifecycle = RecordLifecycleState.DELETED
+    row.deleted_at = now
+    row.deleted_by_user_id = actor.id
+    row.void_reason = reason.strip()
+    row.pending_void_reason = None
+    row.pending_void_by_user_id = None
+    row.pending_void_requested_at = None
+    if row.reconciliation_status == LedgerReconciliationStatus.PENDING_DELETE_CONFIRMATION:
+        row.reconciliation_status = LedgerReconciliationStatus.ADJUSTED
+    db.add(row)
+    audit_service.write_audit_log(
+        db,
+        actor_user_id=actor.id,
+        impersonator_user_id=impersonator_id,
+        action="ledger.entry_voided",
+        entity_type="ledger_entry",
+        entity_id=str(row.id),
+        message=f"Voided: {reason.strip()}",
+        payload={"void_reason": reason.strip()},
+        ip_address=ip_address,
+    )
+
+
+def void_ledger_entry(
     db: Session,
     *,
     actor: User,
     impersonator_id: uuid.UUID | None,
     ip_address: str | None,
     entry_id: uuid.UUID,
-) -> None:
+    reason: str,
+) -> LedgerEntry:
+    """Void a ledger entry. Never hard-deletes — preserves index continuity."""
+    if not reason.strip():
+        raise ValidationAppError("Void reason is required.", code="VOID_REASON_REQUIRED")
+
     row = db.get(LedgerEntry, entry_id)
-    if row is None or row.record_lifecycle != RecordLifecycleState.ACTIVE:
+    if row is None:
         raise NotFoundError("Entry not found.", code="LEDGER_NOT_FOUND")
-    if row.reconciliation_status in {
-        LedgerReconciliationStatus.SETTLED,
-        LedgerReconciliationStatus.LOCKED,
-    }:
-        raise ConflictError(
-            "Cannot delete approved or settled records.", code="LEDGER_DELETE_FORBIDDEN"
-        )
+    _assert_entry_mutable_for_void_or_edit(row)
 
     grace_ops = actor.role in {UserRole.MANAGER, UserRole.ADMIN}
     require_writable_month_for_entry(
@@ -901,37 +1524,335 @@ def soft_delete_barber_entry(
     )
 
     if actor.role in (UserRole.BARBER, UserRole.STAFF):
-        if row.record_stream != LedgerRecordStream.EMPLOYEE:
-            raise ForbiddenError("Providers may only delete employee stream entries.", code="FORBIDDEN")
-        if row.employee_user_id != actor.id:
-            raise ForbiddenError(
-                "Cannot delete another provider's records.", code="LEDGER_WRONG_EMPLOYEE"
-            )
-        bd = row.business_date
-        if bd is None:
-            raise ValidationAppError("Entry missing business_date.", code="LEDGER_DATA_ERROR")
-        if not barber_may_edit_entry(business_date=bd, now=datetime.now(UTC)):
-            raise ConflictError(
-                "Deletes are locked after 21:00 on the business day.",
-                code="BARBER_EDIT_CUTOFF",
-            )
-    elif actor.role not in {UserRole.MANAGER, UserRole.ADMIN}:
-        raise ForbiddenError("Insufficient permissions.", code="FORBIDDEN")
+        return _void_by_service_provider(
+            db,
+            actor=actor,
+            row=row,
+            reason=reason,
+            impersonator_id=impersonator_id,
+            ip_address=ip_address,
+        )
 
-    row.record_lifecycle = RecordLifecycleState.DELETED
-    row.deleted_at = datetime.now(UTC)
-    row.deleted_by_user_id = actor.id
-    db.add(row)
+    if actor.role in {UserRole.MANAGER, UserRole.ADMIN}:
+        return _void_by_manager(
+            db,
+            actor=actor,
+            row=row,
+            reason=reason,
+            impersonator_id=impersonator_id,
+            ip_address=ip_address,
+        )
+
+    raise ForbiddenError("Insufficient permissions.", code="FORBIDDEN")
+
+
+def _void_by_service_provider(
+    db: Session,
+    *,
+    actor: User,
+    row: LedgerEntry,
+    reason: str,
+    impersonator_id: uuid.UUID | None,
+    ip_address: str | None,
+) -> LedgerEntry:
+    if row.record_stream != LedgerRecordStream.EMPLOYEE:
+        raise ForbiddenError("Providers may only void employee stream entries.", code="FORBIDDEN")
+    if row.employee_user_id != actor.id:
+        raise ForbiddenError("Cannot void another provider's records.", code="LEDGER_WRONG_EMPLOYEE")
+    if row.entry_type != LedgerEntryType.SERVICE:
+        raise ValidationAppError("Providers may only void service entries.", code="LEDGER_WRONG_TYPE")
+
+    bd = row.business_date
+    if bd is None:
+        raise ValidationAppError("Entry missing business_date.", code="LEDGER_DATA_ERROR")
+    if not barber_may_edit_entry(business_date=bd, now=datetime.now(UTC)):
+        raise ConflictError(
+            "Voids are locked after 21:00 on the business day.",
+            code="BARBER_EDIT_CUTOFF",
+        )
+
+    _void_active_service_pair(
+        db,
+        anchor_row=row,
+        actor=actor,
+        reason=reason,
+        impersonator_id=impersonator_id,
+        ip_address=ip_address,
+    )
+    return row
+
+
+def _void_by_manager(
+    db: Session,
+    *,
+    actor: User,
+    row: LedgerEntry,
+    reason: str,
+    impersonator_id: uuid.UUID | None,
+    ip_address: str | None,
+) -> LedgerEntry:
+    """Sales/expenses void immediately. Service voids may require employee confirmation."""
+    if row.entry_type in (LedgerEntryType.SALE, LedgerEntryType.EXPENSE):
+        _finalize_void(
+            db,
+            row=row,
+            actor=actor,
+            reason=reason,
+            impersonator_id=impersonator_id,
+            ip_address=ip_address,
+        )
+        db.flush()
+        return row
+
+    if row.entry_type != LedgerEntryType.SERVICE:
+        raise ValidationAppError("Unsupported entry type.", code="LEDGER_WRONG_TYPE")
+
+    employee, manager = paired_rows_for_service(db, row)
+    employee_row = employee if employee is not None else (
+        row if row.record_stream == LedgerRecordStream.EMPLOYEE else None
+    )
+
+    if employee_row is None:
+        _void_active_service_pair(
+            db,
+            anchor_row=row,
+            actor=actor,
+            reason=reason,
+            impersonator_id=impersonator_id,
+            ip_address=ip_address,
+        )
+        return row
+
+    if employee_row.employee_user_id is None:
+        _void_active_service_pair(
+            db,
+            anchor_row=employee_row,
+            actor=actor,
+            reason=reason,
+            impersonator_id=impersonator_id,
+            ip_address=ip_address,
+        )
+        return employee_row
+
+    now = datetime.now(UTC)
+    employee_row.pending_void_reason = reason.strip()
+    employee_row.pending_void_by_user_id = actor.id
+    employee_row.pending_void_requested_at = now
+    employee_row.reconciliation_status = LedgerReconciliationStatus.PENDING_DELETE_CONFIRMATION
+    db.add(employee_row)
     audit_service.write_audit_log(
         db,
         actor_user_id=actor.id,
         impersonator_user_id=impersonator_id,
-        action="ledger.entry_soft_delete",
+        action="ledger.entry_void_requested",
         entity_type="ledger_entry",
-        entity_id=str(row.id),
-        message="Ledger entry soft-deleted",
+        entity_id=str(employee_row.id),
+        message=f"Void requested: {reason.strip()}",
+        payload={"void_reason": reason.strip()},
         ip_address=ip_address,
     )
+    db.flush()
+    return employee_row
+
+
+def accept_pending_void(
+    db: Session,
+    *,
+    actor: User,
+    impersonator_id: uuid.UUID | None,
+    ip_address: str | None,
+    entry_id: uuid.UUID,
+) -> LedgerEntry:
+    """Employee accepts a manager-initiated void request."""
+    row = db.get(LedgerEntry, entry_id)
+    if row is None or row.record_stream != LedgerRecordStream.EMPLOYEE:
+        raise NotFoundError("Entry not found.", code="LEDGER_NOT_FOUND")
+    if row.employee_user_id != actor.id:
+        raise ForbiddenError("Cannot accept void for another employee.", code="FORBIDDEN")
+    if row.reconciliation_status != LedgerReconciliationStatus.PENDING_DELETE_CONFIRMATION:
+        raise ConflictError("No pending void request on this record.", code="NO_PENDING_VOID")
+    if not row.pending_void_reason:
+        raise ConflictError("No pending void request on this record.", code="NO_PENDING_VOID")
+
+    reason = row.pending_void_reason
+    _void_active_service_pair(
+        db,
+        anchor_row=row,
+        actor=actor,
+        reason=reason,
+        impersonator_id=impersonator_id,
+        ip_address=ip_address,
+    )
+    return row
+
+
+def list_pending_void_requests(
+    db: Session,
+    *,
+    barber_user_id: uuid.UUID,
+) -> list[dict[str, Any]]:
+    """Pending manager void requests awaiting employee confirmation."""
+    rows = (
+        _stream_filter(
+            _service_base_filter(db, barber_user_id=barber_user_id, include_voided=False),
+            LedgerRecordStream.EMPLOYEE,
+        )
+        .filter(
+            LedgerEntry.reconciliation_status
+            == LedgerReconciliationStatus.PENDING_DELETE_CONFIRMATION
+        )
+        .order_by(LedgerEntry.pending_void_requested_at.desc())
+        .all()
+    )
+    type_ids = {r.service_type_id for r in rows if r.service_type_id}
+    names = _service_type_names(db, type_ids)
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        mgr = find_manager_row_at_index(
+            db,
+            barber_user_id=barber_user_id,
+            financial_month_id=row.financial_month_id,
+            index=row.barber_sequence_index,  # type: ignore[arg-type]
+        )
+        items.append(
+            {
+                "entry_id": str(row.id),
+                "index": row.barber_sequence_index,
+                "index_label": format_ledger_index_label(
+                    LedgerEntryType.SERVICE, row.barber_sequence_index
+                ),
+                "service_name": names.get(row.service_type_id, "Service")
+                if row.service_type_id
+                else "Service",
+                "amount": str(row.amount),
+                "manager_amount": str(mgr.amount) if mgr else None,
+                "pending_void_reason": row.pending_void_reason,
+                "pending_void_by_user_id": (
+                    str(row.pending_void_by_user_id) if row.pending_void_by_user_id else None
+                ),
+                "pending_void_by_label": _user_display_label(db, row.pending_void_by_user_id),
+                "pending_void_requested_at": (
+                    row.pending_void_requested_at.isoformat()
+                    if row.pending_void_requested_at
+                    else None
+                ),
+                "business_date": row.business_date.isoformat() if row.business_date else None,
+            }
+        )
+    return items
+
+
+def update_manager_ledger_entry(
+    db: Session,
+    *,
+    actor: User,
+    impersonator_id: uuid.UUID | None,
+    ip_address: str | None,
+    entry_id: uuid.UUID,
+    amount: Decimal | None,
+    service_type_id: uuid.UUID | None,
+    sale_category_id: uuid.UUID | None,
+    expense_category_id: uuid.UUID | None,
+    note: str | None,
+) -> LedgerEntry:
+    if actor.role not in {UserRole.MANAGER, UserRole.ADMIN}:
+        raise ForbiddenError("Managers or admins only.", code="FORBIDDEN")
+
+    row = db.get(LedgerEntry, entry_id)
+    if row is None:
+        raise NotFoundError("Entry not found.", code="LEDGER_NOT_FOUND")
+    _assert_entry_mutable_for_void_or_edit(row)
+
+    require_writable_month_for_entry(
+        db,
+        financial_month_id=row.financial_month_id,
+        actor=actor,
+        grace_operational=True,
+    )
+
+    if amount is not None:
+        if amount <= 0:
+            raise ValidationAppError("Amount must be positive.", code="INVALID_AMOUNT")
+        old = row.amount
+        row.amount = amount
+        audit_service.write_audit_log(
+            db,
+            actor_user_id=actor.id,
+            impersonator_user_id=impersonator_id,
+            action="ledger.entry_edit",
+            entity_type="ledger_entry",
+            entity_id=str(row.id),
+            message=f"Edited from ₦{old} → ₦{amount}",
+            payload={"field": "amount", "from": str(old), "to": str(amount)},
+            ip_address=ip_address,
+        )
+
+    if row.entry_type == LedgerEntryType.SERVICE:
+        if service_type_id is not None:
+            catalog_service.assert_service_type_selectable(db, service_type_id)
+            row.service_type_id = service_type_id
+    elif row.entry_type == LedgerEntryType.SALE:
+        if sale_category_id is not None:
+            catalog_service.assert_sale_category_selectable(db, sale_category_id)
+            row.sale_category_id = sale_category_id
+    elif row.entry_type == LedgerEntryType.EXPENSE:
+        if expense_category_id is not None:
+            catalog_service.assert_expense_category_selectable(db, expense_category_id)
+            row.expense_category_id = expense_category_id
+
+    if note is not None:
+        row.note = note
+
+    db.add(row)
+    db.flush()
+    if row.entry_type == LedgerEntryType.SERVICE:
+        try_auto_match_for_service_row(db, row)
+    return row
+
+
+def soft_delete_barber_entry(
+    db: Session,
+    *,
+    actor: User,
+    impersonator_id: uuid.UUID | None,
+    ip_address: str | None,
+    entry_id: uuid.UUID,
+    reason: str = "Voided",
+) -> None:
+    """Backward-compatible alias — always voids with a reason."""
+    void_ledger_entry(
+        db,
+        actor=actor,
+        impersonator_id=impersonator_id,
+        ip_address=ip_address,
+        entry_id=entry_id,
+        reason=reason,
+    )
+
+
+def ledger_entry_void_metadata(db: Session, row: LedgerEntry) -> dict[str, Any]:
+    """Serialize void/pending-void fields for API responses."""
+    return {
+        "record_lifecycle": str(row.record_lifecycle),
+        "is_voided": _is_voided(row),
+        "void_reason": row.void_reason,
+        "voided_at": row.deleted_at.isoformat() if row.deleted_at else None,
+        "voided_by_user_id": str(row.deleted_by_user_id) if row.deleted_by_user_id else None,
+        "voided_by_label": _user_display_label(db, row.deleted_by_user_id),
+        "pending_void_reason": row.pending_void_reason,
+        "pending_void_by_user_id": (
+            str(row.pending_void_by_user_id) if row.pending_void_by_user_id else None
+        ),
+        "pending_void_by_label": _user_display_label(db, row.pending_void_by_user_id),
+        "pending_void_requested_at": (
+            row.pending_void_requested_at.isoformat() if row.pending_void_requested_at else None
+        ),
+        "original_amount": (
+            str(row.original_barber_amount)
+            if row.original_barber_amount is not None
+            else None
+        ),
+    }
 
 
 def purge_entry_admin(
@@ -990,15 +1911,17 @@ def barber_month_revenue_buckets(
 
     for slot in slots:
         comparison = _pair_reconciliation_status(slot.employee, slot.manager)
+        if comparison in _FINANCIALLY_EXCLUDED_COMPARISONS:
+            continue
         if comparison in {"missing_employee_entry", "missing_manager_entry"}:
             row = slot.employee or slot.manager
-            if row is not None:
+            if row is not None and not _is_voided(row):
                 pending += row.amount
         elif comparison == "mismatch":
             mismatch_indexes.append(slot.index)
         elif comparison == "matched":
             row = slot.employee or slot.manager
-            if row is not None:
+            if row is not None and not _is_voided(row):
                 approved += row.amount
 
     return {
@@ -1258,7 +2181,9 @@ def list_manager_official_timeline(
     return (
         db.query(LedgerEntry)
         .filter(
-            LedgerEntry.record_lifecycle == RecordLifecycleState.ACTIVE,
+            LedgerEntry.record_lifecycle.in_(
+                (RecordLifecycleState.ACTIVE, RecordLifecycleState.DELETED)
+            ),
             or_(
                 LedgerEntry.entry_type != LedgerEntryType.SERVICE,
                 LedgerEntry.record_stream == LedgerRecordStream.MANAGER,
