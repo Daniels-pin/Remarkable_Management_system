@@ -172,6 +172,19 @@ def barber_reconciliation_workspace(
     }
 
 
+@router.get("/reconciliation/counts")
+def barber_reconciliation_counts(
+    db: Session = Depends(get_db),
+    actor: ActorContext = Depends(get_service_provider_actor),
+) -> dict:
+    """Actionable pending/mismatch counts for provider navigation badges."""
+    return ledger_service.count_actionable_reconciliation(
+        db,
+        perspective="employee",
+        barber_user_id=actor.user.id,
+    )
+
+
 @router.get("/reconciliation/months")
 def barber_operational_months(
     db: Session = Depends(get_db),

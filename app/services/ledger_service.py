@@ -1090,7 +1090,8 @@ def list_reconciliation_inbox(
     if inbox_filter not in {"pending", "mismatch"}:
         raise ValidationAppError("Invalid inbox filter.", code="INVALID_FILTER")
 
-    target_pending = {"missing_manager_entry", "missing_employee_entry"}
+    # Manager inbox: only indexes where the employee side exists and manager must match.
+    target_pending = {"missing_manager_entry"}
     target_mismatch = {"mismatch"}
 
     service_rows = (
@@ -1183,6 +1184,64 @@ def list_reconciliation_inbox(
         payload["entry_type"] = "service"
         items.append(payload)
     return items
+
+
+def count_actionable_reconciliation(
+    db: Session,
+    *,
+    perspective: str,
+    barber_user_id: uuid.UUID | None = None,
+) -> dict[str, int]:
+    """
+    Role-oriented pending/mismatch counts for navigation badges.
+
+    ``perspective`` ``manager``: shop-wide ``missing_manager_entry`` slots.
+    ``perspective`` ``employee``: barber-scoped ``missing_employee_entry`` slots.
+    """
+    if perspective not in {"manager", "employee"}:
+        raise ValidationAppError("Invalid perspective.", code="INVALID_PERSPECTIVE")
+    if perspective == "employee" and barber_user_id is None:
+        raise ValidationAppError("barber_user_id required.", code="INVALID_REQUEST")
+
+    pending_targets = (
+        {"missing_manager_entry"}
+        if perspective == "manager"
+        else {"missing_employee_entry"}
+    )
+    target_mismatch = {"mismatch"}
+
+    query = db.query(LedgerEntry).filter(
+        LedgerEntry.record_lifecycle == RecordLifecycleState.ACTIVE,
+        LedgerEntry.entry_type == LedgerEntryType.SERVICE,
+        LedgerEntry.record_stream.isnot(None),
+        LedgerEntry.barber_sequence_index.isnot(None),
+        LedgerEntry.employee_user_id.isnot(None),
+    )
+    if perspective == "employee":
+        query = query.filter(LedgerEntry.employee_user_id == barber_user_id)
+
+    service_rows = query.order_by(LedgerEntry.occurred_at.desc()).limit(1500).all()
+    comparison = comparison_status_map_for_rows(db, service_rows)
+
+    seen_slots: set[tuple[uuid.UUID, uuid.UUID, int]] = set()
+    pending = 0
+    mismatch = 0
+
+    for row in service_rows:
+        if row.barber_sequence_index is None or row.employee_user_id is None:
+            continue
+        slot_key = (row.employee_user_id, row.financial_month_id, row.barber_sequence_index)
+        if slot_key in seen_slots:
+            continue
+        comp = comparison.get(row.id)
+        if comp in pending_targets:
+            seen_slots.add(slot_key)
+            pending += 1
+        elif comp in target_mismatch:
+            seen_slots.add(slot_key)
+            mismatch += 1
+
+    return {"pending": pending, "mismatch": mismatch}
 
 
 def resolve_mismatch_use_employee_amount(

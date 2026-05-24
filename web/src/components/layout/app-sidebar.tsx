@@ -6,8 +6,10 @@ import { usePathname } from "next/navigation";
 import * as React from "react";
 
 import { RemarkableWordmark } from "@/components/branding/remarkable-logo";
+import { useReconciliationCounts } from "@/components/ops/reconciliation-counts-context";
 import { useAuth } from "@/components/providers/auth-provider";
 import { Button } from "@/components/ui/button";
+import { OperationalAlertBadge } from "@/components/ui/operational-alert-badge";
 import { Separator } from "@/components/ui/separator";
 import {
   Tooltip,
@@ -19,6 +21,7 @@ import { getHomePath } from "@/lib/routing";
 import { cn } from "@/lib/utils";
 
 const STORAGE_KEY = "remarkable:sidebar-collapsed";
+const DAILY_LEDGER_HREF = "/barbershop/daily-ledger";
 
 type AppSidebarProps = {
   className?: string;
@@ -54,6 +57,7 @@ export function AppSidebar({ className }: AppSidebarProps) {
 
   const items = filterNavForRole(barbershopNav, session?.role);
   const homeHref = getHomePath(session?.role);
+  const { pendingCount } = useReconciliationCounts();
 
   const widthClass = collapsed ? "w-[var(--sidebar-collapsed)]" : "w-[var(--sidebar-width)]";
 
@@ -89,7 +93,7 @@ export function AppSidebar({ className }: AppSidebarProps) {
             <Link
               href={item.href}
               className={cn(
-                "group flex items-center gap-3 rounded-[var(--radius-md)] px-2.5 py-2 text-sm transition-colors",
+                "group relative flex items-center gap-3 rounded-[var(--radius-md)] px-2.5 py-2 text-sm transition-colors",
                 active
                   ? "bg-[var(--muted)] text-[var(--foreground)]"
                   : "text-[var(--muted-foreground)] hover:bg-[var(--muted)]/70 hover:text-[var(--foreground)]",
@@ -103,7 +107,17 @@ export function AppSidebar({ className }: AppSidebarProps) {
                 )}
               />
               {!collapsed ? (
-                <span className="truncate">{item.label}</span>
+                <>
+                  <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                  {item.href === DAILY_LEDGER_HREF ? (
+                    <OperationalAlertBadge count={pendingCount} />
+                  ) : null}
+                </>
+              ) : item.href === DAILY_LEDGER_HREF && pendingCount > 0 ? (
+                <OperationalAlertBadge
+                  count={pendingCount}
+                  className="absolute -right-0.5 -top-0.5 min-h-[0.875rem] min-w-[0.875rem] px-1 text-[9px]"
+                />
               ) : null}
             </Link>
           );
@@ -112,7 +126,12 @@ export function AppSidebar({ className }: AppSidebarProps) {
             return (
               <Tooltip key={item.href} delayDuration={200}>
                 <TooltipTrigger asChild>{link}</TooltipTrigger>
-                <TooltipContent side="right">{item.label}</TooltipContent>
+                <TooltipContent side="right">
+                  {item.label}
+                  {item.href === DAILY_LEDGER_HREF && pendingCount > 0
+                    ? ` · ${pendingCount} pending`
+                    : ""}
+                </TooltipContent>
               </Tooltip>
             );
           }

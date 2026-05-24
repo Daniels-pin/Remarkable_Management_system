@@ -11,6 +11,7 @@ import {
   listServiceTypes,
   type ServiceTypeItem,
 } from "@/lib/api";
+import { dispatchReconciliationUpdated } from "@/lib/reconciliation-events";
 import {
   Dialog,
   DialogBody,
@@ -97,6 +98,7 @@ export function RecordServiceFab({
       setOpen(false);
       reset();
       onCreated?.();
+      dispatchReconciliationUpdated();
     } catch (e) {
       if (e instanceof ApiError) toast.error(e.message);
       else toast.error("Could not record service.");

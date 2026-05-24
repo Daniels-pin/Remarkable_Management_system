@@ -19,6 +19,7 @@ import {
   type PendingReconciliationIndex,
   type ServiceTypeItem,
 } from "@/lib/api";
+import { dispatchReconciliationUpdated } from "@/lib/reconciliation-events";
 import {
   Dialog,
   DialogBody,
@@ -253,6 +254,9 @@ export function AddEntryFab({
       setOpen(false);
       reset();
       onCreated?.();
+      if (kind === "service") {
+        dispatchReconciliationUpdated();
+      }
     } catch (e) {
       if (e instanceof ApiError) toast.error(e.message);
       else toast.error("Could not record entry.");

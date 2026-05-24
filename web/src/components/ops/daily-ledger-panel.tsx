@@ -17,7 +17,9 @@ import {
   type VoidConfirmTarget,
 } from "@/components/ops/void-confirm-dialog";
 import { useOpsNotifications } from "@/components/ops/ops-notifications-context";
+import { useReconciliationCounts } from "@/components/ops/reconciliation-counts-context";
 import { Button } from "@/components/ui/button";
+import { OperationalAlertBadge } from "@/components/ui/operational-alert-badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { IndexedReconciliationTable } from "@/components/ops/indexed-reconciliation-table";
@@ -50,8 +52,10 @@ import {
 } from "@/lib/api";
 import { currentYearMonth } from "@/lib/ledger-month";
 import { isManagerUp, isServiceProvider } from "@/lib/roles";
+import { dispatchReconciliationUpdated } from "@/lib/reconciliation-events";
 import type { LedgerEntryType, LedgerTransaction } from "@/lib/ops-types";
 import { resolveTransactionStatus } from "@/lib/reconciliation-status";
+import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
 type ManagerFilter =
@@ -93,11 +97,13 @@ function matchesManagerFilter(row: LedgerTransaction, f: ManagerFilter) {
 
 function filterWorkspaceRows(rows: ReconciliationWorkspaceRow[], f: ProviderFilter) {
   if (f === "service") return rows;
-  return rows.filter((r) => matchesReconciliationInboxFilter(r.comparison_status, f));
+  return rows.filter((r) =>
+    matchesReconciliationInboxFilter(r.comparison_status, f, "employee"),
+  );
 }
 
-function countInboxFromWorkspace(rows: ReconciliationWorkspaceRow[], f: "pending" | "mismatch") {
-  return rows.filter((r) => matchesReconciliationInboxFilter(r.comparison_status, f)).length;
+function notifyReconciliationChanged() {
+  dispatchReconciliationUpdated();
 }
 
 function emptyLedgerCopy(
@@ -162,24 +168,34 @@ function FilterChips<T extends string>({
     <div className="flex flex-wrap gap-1.5">
       {filters.map((chip) => {
         const count = counts?.[chip.id];
-        const label =
-          count != null && count > 0 && (chip.id === "pending" || chip.id === "mismatch")
-            ? `${chip.label} (${count})`
-            : chip.label;
+        const showAlertBadge =
+          count != null &&
+          count > 0 &&
+          (chip.id === "pending" || chip.id === "mismatch");
         return (
           <Button
             key={chip.id}
             type="button"
             size="sm"
             variant={active === chip.id ? "default" : "outline"}
-            className={
+            className={cn(
+              "gap-1.5",
               active === chip.id
                 ? "rounded-full border-transparent bg-[var(--foreground)] text-[var(--background)]"
-                : "rounded-full border-dashed"
-            }
+                : "rounded-full border-dashed",
+              showAlertBadge && active !== chip.id && "border-rose-500/25",
+            )}
             onClick={() => onChange(chip.id)}
           >
-            {label}
+            <span>{chip.label}</span>
+            {showAlertBadge ? (
+              <OperationalAlertBadge
+                count={count}
+                className={cn(
+                  active === chip.id && "bg-white/95 text-[#E5484D] shadow-none",
+                )}
+              />
+            ) : null}
           </Button>
         );
       })}
@@ -189,6 +205,7 @@ function FilterChips<T extends string>({
 
 function ProviderDailyLedger() {
   const today = React.useMemo(() => new Date().toISOString().slice(0, 10), []);
+  const { pendingCount, mismatchCount, refreshCounts } = useReconciliationCounts();
   const [businessDate, setBusinessDate] = React.useState(today);
   const [dayRows, setDayRows] = React.useState<ReconciliationWorkspaceRow[]>([]);
   const [dayLoading, setDayLoading] = React.useState(true);
@@ -207,6 +224,7 @@ function ProviderDailyLedger() {
         OPERATIONAL_HISTORY_PAGE_SIZE,
       );
       setDayRows(res.items);
+      notifyReconciliationChanged();
     } catch (e) {
       if (e instanceof ApiError) toast.error(e.message);
       setDayRows([]);
@@ -267,6 +285,7 @@ function ProviderDailyLedger() {
       toast.success("Record voided.");
       await loadDay();
       await loadPendingVoids();
+      notifyReconciliationChanged();
     } catch (e) {
       toast.error(e instanceof ApiError ? e.message : "Could not void record.");
       throw e;
@@ -280,10 +299,10 @@ function ProviderDailyLedger() {
 
   const inboxCounts = React.useMemo(
     () => ({
-      pending: countInboxFromWorkspace(dayRows, "pending"),
-      mismatch: countInboxFromWorkspace(dayRows, "mismatch"),
+      pending: pendingCount,
+      mismatch: mismatchCount,
     }),
-    [dayRows],
+    [pendingCount, mismatchCount],
   );
 
   const emptyCopy = emptyLedgerCopy(filter, "provider");
@@ -295,6 +314,7 @@ function ProviderDailyLedger() {
         onResolved={() => {
           void loadDay();
           void loadPendingVoids();
+          notifyReconciliationChanged();
         }}
       />
 
@@ -350,7 +370,14 @@ function ProviderDailyLedger() {
         />
 
         {canRecord && filter === "service" ? (
-          <RecordServiceFab key="record-service" onCreated={() => void loadDay()} />
+          <RecordServiceFab
+            key="record-service"
+            onCreated={() => {
+              void loadDay();
+              void refreshCounts();
+              notifyReconciliationChanged();
+            }}
+          />
         ) : null}
       </section>
 
@@ -373,10 +400,9 @@ export function DailyLedgerPanel() {
   const canAddEntry = isManagerUp(session?.role);
 
   const { dismissByTransactionId } = useOpsNotifications();
+  const { pendingCount, mismatchCount, refreshCounts } = useReconciliationCounts();
   const [rows, setRows] = React.useState<LedgerTransaction[]>([]);
   const [inboxRows, setInboxRows] = React.useState<ReconciliationInboxRow[]>([]);
-  const [pendingCount, setPendingCount] = React.useState(0);
-  const [mismatchCount, setMismatchCount] = React.useState(0);
   const [loading, setLoading] = React.useState(true);
   const [filter, setFilter] = React.useState<ManagerFilter>("all");
   const [selectedPending, setSelectedPending] = React.useState<ReconciliationInboxRow | null>(null);
@@ -402,8 +428,7 @@ export function DailyLedgerPanel() {
       ]);
       setRows(ledgerRes.items.map(mapLedgerRow));
       setInboxRows(filter === "pending" ? pendingRes.items : mismatchRes.items);
-      setPendingCount(pendingRes.total);
-      setMismatchCount(mismatchRes.total);
+      notifyReconciliationChanged();
     } catch (e) {
       if (e instanceof ApiError) toast.error(e.message);
       else toast.error("Could not load ledger.");
@@ -418,17 +443,14 @@ export function DailyLedgerPanel() {
     try {
       const res = await listReconciliationInbox(filter as "pending" | "mismatch");
       setInboxRows(res.items);
-      if (filter === "pending") setPendingCount(res.total);
-      if (filter === "mismatch") setMismatchCount(res.total);
-      const other = await listReconciliationInbox(filter === "pending" ? "mismatch" : "pending");
-      if (filter === "pending") setMismatchCount(other.total);
-      else setPendingCount(other.total);
       const ledgerRes = await listBarbershopLedger();
       setRows(ledgerRes.items.map(mapLedgerRow));
+      await refreshCounts();
+      notifyReconciliationChanged();
     } catch (e) {
       if (e instanceof ApiError) toast.error(e.message);
     }
-  }, [filter]);
+  }, [filter, refreshCounts]);
 
   React.useEffect(() => {
     queueMicrotask(() => {
@@ -447,7 +469,10 @@ export function DailyLedgerPanel() {
     : "Official operational ledger — automatic matching when both sides align, or manual reconciliation from Pending.";
 
   const emptyCopy = emptyLedgerCopy(filter, "manager");
-  const refresh = () => void load();
+  const refresh = () => {
+    void load();
+    void refreshCounts();
+  };
 
   const openEditDialog = (row: LedgerTransaction) => {
     const description =
@@ -519,6 +544,7 @@ export function DailyLedgerPanel() {
           : "Record voided.";
       toast.success(msg);
       refresh();
+      notifyReconciliationChanged();
     } catch (e) {
       toast.error(e instanceof ApiError ? e.message : "Could not void record.");
       throw e;
@@ -555,13 +581,20 @@ export function DailyLedgerPanel() {
             loading={loading}
             emptyTitle={emptyCopy.title}
             emptyBody={emptyCopy.body}
+            showMatchAction={filter === "pending"}
             onSelect={(row) => {
               if (filter === "pending") setSelectedPending(row);
               else setSelectedMismatch(row);
             }}
           />
           {filter === "pending" ? (
-            <MatchAllBar pendingCount={pendingCount} onMatched={() => void loadInboxOnly()} />
+            <MatchAllBar
+              pendingCount={pendingCount}
+              onMatched={() => {
+                void loadInboxOnly();
+                notifyReconciliationChanged();
+              }}
+            />
           ) : null}
         </>
       ) : sorted.length === 0 && !loading ? (
@@ -591,6 +624,8 @@ export function DailyLedgerPanel() {
                 r.id === id ? { ...r, status: "approved" as const, reconciliation: undefined } : r,
               ),
             );
+            notifyReconciliationChanged();
+            void refreshCounts();
           }}
           onVoid={openVoidDialog}
           onEdit={openEditDialog}
@@ -605,13 +640,19 @@ export function DailyLedgerPanel() {
         row={selectedPending}
         open={Boolean(selectedPending)}
         onOpenChange={(o) => !o && setSelectedPending(null)}
-        onMatched={() => void loadInboxOnly()}
+        onMatched={() => {
+          void loadInboxOnly();
+          notifyReconciliationChanged();
+        }}
       />
       <MismatchDetailSheet
         row={selectedMismatch}
         open={Boolean(selectedMismatch)}
         onOpenChange={(o) => !o && setSelectedMismatch(null)}
-        onResolved={() => void loadInboxOnly()}
+        onResolved={() => {
+          void loadInboxOnly();
+          notifyReconciliationChanged();
+        }}
       />
 
       <VoidConfirmDialog

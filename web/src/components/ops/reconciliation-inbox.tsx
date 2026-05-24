@@ -5,6 +5,7 @@ import { toast } from "sonner";
 
 import { ReconciliationComparisonBadge } from "@/components/ops/reconciliation-comparison-badge";
 import { Button } from "@/components/ui/button";
+import { OperationalAlertBadge } from "@/components/ui/operational-alert-badge";
 import {
   Dialog,
   DialogBody,
@@ -24,8 +25,10 @@ import {
   ApiError,
   matchAllPendingLedgerEntries,
   matchPendingLedgerEntry,
+  resolveMismatchUseEmployeeAmount,
   type ReconciliationInboxRow,
 } from "@/lib/api";
+import { dispatchReconciliationUpdated } from "@/lib/reconciliation-events";
 import { formatNaira, formatTimeLabel } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -68,40 +71,58 @@ function PaymentSelect({
 function InboxRow({
   row,
   onSelect,
+  showMatchAction,
 }: {
   row: ReconciliationInboxRow;
   onSelect: (row: ReconciliationInboxRow) => void;
+  showMatchAction?: boolean;
 }) {
   const indexLabel = row.index_label ?? `#${String(row.index).padStart(3, "0")}`;
   const amount = row.employee_amount ?? row.manager_amount ?? row.amount;
   const time = row.occurred_at;
+  const canMatch =
+    showMatchAction &&
+    row.comparison_status === "missing_manager_entry" &&
+    Boolean(row.employee_entry_id);
 
   return (
     <li>
-      <button
-        type="button"
-        onClick={() => onSelect(row)}
-        className="flex w-full items-center gap-3 border-b border-[var(--border)]/70 px-3 py-2.5 text-left transition-colors hover:bg-[var(--muted)]/25 lg:px-4"
-      >
-        <span className="shrink-0 font-mono text-[11px] tabular-nums text-[var(--muted-foreground)]">
-          {indexLabel}
-        </span>
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-xs font-medium text-[var(--foreground)]">
-            {row.service_name}
-          </p>
-          <p className="truncate text-[10px] text-[var(--muted-foreground)]">
-            {row.employee_name ?? "Team member"}
-          </p>
-        </div>
-        <ReconciliationComparisonBadge status={row.comparison_status} compact />
-        <span className="shrink-0 text-xs font-medium tabular-nums text-[var(--foreground)]">
-          {amount != null ? formatNaira(Number(amount)) : "—"}
-        </span>
-        <span className="hidden shrink-0 text-[10px] tabular-nums text-[var(--muted-foreground)] sm:block">
-          {formatTimeLabel(time).split("·").pop()?.trim()}
-        </span>
-      </button>
+      <div className="flex w-full items-center gap-3 border-b border-[var(--border)]/70 px-3 py-2.5 lg:px-4">
+        <button
+          type="button"
+          onClick={() => onSelect(row)}
+          className="flex min-w-0 flex-1 items-center gap-3 text-left transition-colors hover:opacity-80"
+        >
+          <span className="shrink-0 font-mono text-[11px] tabular-nums text-[var(--muted-foreground)]">
+            {indexLabel}
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-xs font-medium text-[var(--foreground)]">
+              {row.service_name}
+            </p>
+            <p className="truncate text-[10px] text-[var(--muted-foreground)]">
+              {row.employee_name ?? "Team member"}
+            </p>
+          </div>
+          <ReconciliationComparisonBadge status={row.comparison_status} compact />
+          <span className="shrink-0 text-xs font-medium tabular-nums text-[var(--foreground)]">
+            {amount != null ? formatNaira(Number(amount)) : "—"}
+          </span>
+          <span className="hidden shrink-0 text-[10px] tabular-nums text-[var(--muted-foreground)] sm:block">
+            {formatTimeLabel(time).split("·").pop()?.trim()}
+          </span>
+        </button>
+        {canMatch ? (
+          <Button
+            type="button"
+            size="sm"
+            className="shrink-0 rounded-full bg-[var(--foreground)] px-3 text-xs text-[var(--background)]"
+            onClick={() => onSelect(row)}
+          >
+            Match
+          </Button>
+        ) : null}
+      </div>
     </li>
   );
 }
@@ -112,12 +133,14 @@ export function ReconciliationInboxTable({
   emptyTitle,
   emptyBody,
   onSelect,
+  showMatchAction,
 }: {
   rows: ReconciliationInboxRow[];
   loading: boolean;
   emptyTitle: string;
   emptyBody: string;
   onSelect: (row: ReconciliationInboxRow) => void;
+  showMatchAction?: boolean;
 }) {
   if (loading) {
     return (
@@ -138,7 +161,16 @@ export function ReconciliationInboxTable({
   }
   return (
     <div className="overflow-hidden rounded-[var(--radius-lg)] border border-[var(--border)]/90 bg-[var(--card)] shadow-[var(--shadow-card)]">
-      <ul>{rows.map((row) => <InboxRow key={row.id} row={row} onSelect={onSelect} />)}</ul>
+      <ul>
+        {rows.map((row) => (
+          <InboxRow
+            key={row.id}
+            row={row}
+            onSelect={onSelect}
+            showMatchAction={showMatchAction}
+          />
+        ))}
+      </ul>
     </div>
   );
 }
@@ -176,6 +208,7 @@ export function PendingMatchSheet({
       toast.success("Index matched");
       onOpenChange(false);
       onMatched();
+      dispatchReconciliationUpdated();
     } catch (e) {
       toast.error(e instanceof ApiError ? e.message : "Could not match entry.");
     } finally {
@@ -296,6 +329,7 @@ export function MismatchDetailSheet({
       toast.success("Mismatch resolved — amounts aligned");
       onOpenChange(false);
       onResolved();
+      dispatchReconciliationUpdated();
     } catch (e) {
       toast.error(e instanceof ApiError ? e.message : "Could not resolve mismatch.");
     } finally {
@@ -435,10 +469,11 @@ export function MatchAllBar({
         <Button
           type="button"
           variant="outline"
-          className="rounded-full border-dashed"
+          className="gap-2 rounded-full border-dashed"
           onClick={() => setOpen(true)}
         >
-          Match all ({pendingCount})
+          Match all
+          <OperationalAlertBadge count={pendingCount} />
         </Button>
       </div>
       <MatchAllConfirmDialog
@@ -450,6 +485,7 @@ export function MatchAllBar({
             const res = await matchAllPendingLedgerEntries(paymentMethod);
             toast.success(`Matched ${res.matched_count} transaction${res.matched_count === 1 ? "" : "s"}`);
             onMatched();
+            dispatchReconciliationUpdated();
           } catch (e) {
             toast.error(e instanceof ApiError ? e.message : "Match all failed.");
             throw e;

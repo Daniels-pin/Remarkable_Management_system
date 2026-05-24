@@ -95,16 +95,25 @@ export function resolveTransactionStatus(opts: {
 
 export type ReconciliationInboxFilter = "pending" | "mismatch";
 
+/** Who must act on a one-sided pending index. */
+export type ReconciliationPerspective = "manager" | "employee";
+
 /** Whether a service row belongs in the Pending or Mismatch inbox filter. */
 export function matchesReconciliationInboxFilter(
   comparisonStatus: string | null | undefined,
   filter: ReconciliationInboxFilter,
+  perspective?: ReconciliationPerspective,
 ): boolean {
   if (filter === "pending") {
+    if (perspective === "manager") {
+      return comparisonStatus === "missing_manager_entry";
+    }
+    if (perspective === "employee") {
+      return comparisonStatus === "missing_employee_entry";
+    }
     return (
       comparisonStatus === "missing_manager_entry" ||
-      comparisonStatus === "missing_employee_entry" ||
-      comparisonStatus === "waiting_for_reconciliation"
+      comparisonStatus === "missing_employee_entry"
     );
   }
   return comparisonStatus === "mismatch";

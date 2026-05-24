@@ -222,6 +222,16 @@ def reconciliation_inbox(
     return {"filter": filter, "items": items, "total": len(items)}
 
 
+@router.get("/reconciliation-counts")
+def reconciliation_counts(
+    db: Session = Depends(get_db),
+    actor: ActorContext = Depends(get_actor_context),
+) -> dict:
+    """Actionable pending/mismatch counts for manager navigation badges."""
+    require_manager_or_admin(actor.user)
+    return ledger_service.count_actionable_reconciliation(db, perspective="manager")
+
+
 @router.post("/match/{employee_entry_id}")
 def match_pending_entry(
     employee_entry_id: uuid.UUID,

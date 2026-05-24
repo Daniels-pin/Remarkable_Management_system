@@ -4,13 +4,18 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 import { useAuth } from "@/components/providers/auth-provider";
+import { OperationalAlertBadge } from "@/components/ui/operational-alert-badge";
+import { useReconciliationCounts } from "@/components/ops/reconciliation-counts-context";
 import { barbershopNav, filterNavForRole } from "@/lib/navigation";
 import { cn } from "@/lib/utils";
+
+const DAILY_LEDGER_HREF = "/barbershop/daily-ledger";
 
 export function MobileSidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
   const { session } = useAuth();
   const items = filterNavForRole(barbershopNav, session?.role);
+  const { pendingCount } = useReconciliationCounts();
 
   return (
     <nav className="flex flex-col gap-1">
@@ -30,7 +35,10 @@ export function MobileSidebarNav({ onNavigate }: { onNavigate?: () => void }) {
             )}
           >
             <item.icon className="h-[1.125rem] w-[1.125rem] shrink-0" />
-            {item.label}
+            <span className="min-w-0 flex-1">{item.label}</span>
+            {item.href === DAILY_LEDGER_HREF ? (
+              <OperationalAlertBadge count={pendingCount} />
+            ) : null}
           </Link>
         );
       })}

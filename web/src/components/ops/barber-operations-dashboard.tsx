@@ -7,6 +7,7 @@ import { BarberProfileView } from "@/components/ops/barber-profile-view";
 import { AttendanceSignInCard } from "@/components/ops/attendance-sign-in-card";
 import { PayoutWithAttendance } from "@/components/ops/payout-with-attendance";
 import { MonthPostureSummary } from "@/components/ops/month-posture-summary";
+import { useReconciliationCounts } from "@/components/ops/reconciliation-counts-context";
 import { RecordServiceFab } from "@/components/ops/record-service-fab";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -22,6 +23,7 @@ import {
 } from "@/lib/api";
 import { formatNaira, formatTimeLabel } from "@/lib/format";
 import { subscribePayoutUpdated } from "@/lib/payout-events";
+import { subscribeReconciliationUpdated } from "@/lib/reconciliation-events";
 import { normalizePayoutBreakdown, resolveActualPayout } from "@/lib/payout";
 import { createEmptyBarberProfileForSession, INITIAL_PAYOUT_HISTORY } from "@/lib/ops-initial-state";
 import type { BarberProfile, LedgerTransaction } from "@/lib/ops-types";
@@ -94,6 +96,7 @@ function mapServiceRow(r: BarberLedgerServiceRow, serviceNames: Map<string, stri
 
 export function BarberOperationsDashboard() {
   const { session } = useAuth();
+  const { pendingCount } = useReconciliationCounts();
   const isStaff = session?.role === "staff";
   const showFinanceTab = canAccessBarbershopFinance(session?.role);
   const baseProfile = React.useMemo(
@@ -216,6 +219,14 @@ export function BarberOperationsDashboard() {
     [loadStats],
   );
 
+  React.useEffect(
+    () =>
+      subscribeReconciliationUpdated(() => {
+        void loadStats();
+      }),
+    [loadStats],
+  );
+
   React.useEffect(() => {
     queueMicrotask(() => {
       void loadFeed();
@@ -293,7 +304,7 @@ export function BarberOperationsDashboard() {
                 indexes.
               </p>
             </div>
-            <MonthPostureSummary data={monthPosture} />
+            <MonthPostureSummary data={monthPosture} pendingIndexCount={pendingCount} />
           </section>
 
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-6">

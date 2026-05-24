@@ -2,6 +2,7 @@
 
 import { RequireBarbershopRoute } from "@/components/auth/guards";
 import { OpsNotificationsProvider } from "@/components/ops/ops-notifications-context";
+import { ReconciliationCountsProvider } from "@/components/ops/reconciliation-counts-context";
 
 export default function BarbershopSectionLayout({
   children,
@@ -10,7 +11,9 @@ export default function BarbershopSectionLayout({
 }) {
   return (
     <RequireBarbershopRoute>
-      <OpsNotificationsProvider>{children}</OpsNotificationsProvider>
+      <OpsNotificationsProvider>
+        <ReconciliationCountsProvider>{children}</ReconciliationCountsProvider>
+      </OpsNotificationsProvider>
     </RequireBarbershopRoute>
   );
 }

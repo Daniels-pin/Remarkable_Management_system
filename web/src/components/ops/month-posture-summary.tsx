@@ -2,6 +2,7 @@
 
 import type { ReactNode } from "react";
 
+import { OperationalAlertBadge } from "@/components/ui/operational-alert-badge";
 import { formatNaira } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -17,9 +18,12 @@ function formatIndexLabel(index: number) {
 
 export function MonthPostureSummary({
   data,
+  pendingIndexCount,
   className,
 }: {
   data: MonthPostureData;
+  /** Actionable pending index count — synced with sidebar badge. */
+  pendingIndexCount?: number;
   className?: string;
 }) {
   const hasMismatch = data.mismatchIndexes.length > 0;
@@ -40,6 +44,11 @@ export function MonthPostureSummary({
         label="Pending"
         hint="One-sided indexes · unreconciled value"
         tone="amber"
+        labelAdornment={
+          pendingIndexCount != null && pendingIndexCount > 0 ? (
+            <OperationalAlertBadge count={pendingIndexCount} />
+          ) : null
+        }
       >
         <p className="font-[family-name:var(--font-serif)] text-2xl font-semibold tabular-nums tracking-tight text-amber-900 dark:text-amber-100">
           {formatNaira(data.pendingTotal)}
@@ -76,12 +85,14 @@ function PostureCard({
   hint,
   tone,
   alert,
+  labelAdornment,
   children,
 }: {
   label: string;
   hint: string;
   tone: "amber" | "emerald" | "rose";
   alert?: boolean;
+  labelAdornment?: ReactNode;
   children: ReactNode;
 }) {
   const accent = {
@@ -100,9 +111,12 @@ function PostureCard({
       )}
     >
       <div className="space-y-0.5">
-        <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--muted-foreground)]">
-          {label}
-        </p>
+        <div className="flex items-center gap-2">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--muted-foreground)]">
+            {label}
+          </p>
+          {labelAdornment}
+        </div>
         <p className="text-[11px] leading-snug text-[var(--muted-foreground)]/80">{hint}</p>
       </div>
       <div className="mt-3">{children}</div>

@@ -532,6 +532,21 @@ export function listReconciliationInbox(filter: "pending" | "mismatch") {
   );
 }
 
+export type ReconciliationCounts = {
+  pending: number;
+  mismatch: number;
+};
+
+export function getManagerReconciliationCounts() {
+  return apiFetch<ReconciliationCounts>(
+    "/api/v1/barbershop/ledger/reconciliation-counts",
+  );
+}
+
+export function getBarberReconciliationCounts() {
+  return apiFetch<ReconciliationCounts>("/api/v1/barber/reconciliation/counts");
+}
+
 export function matchPendingLedgerEntry(
   employeeEntryId: string,
   paymentMethod: "cash" | "transfer" | "pos",
