@@ -1425,3 +1425,261 @@ export function activateUserAttendance(userId: string, attendanceStartDate?: str
     ),
   });
 }
+
+// --- Furniture domain ---
+
+export type FurnitureOrderStatus = "pending" | "in_progress" | "completed";
+
+export type FurnitureOrderItem = {
+  id: string;
+  name: string;
+  description: string | null;
+  quantity: number;
+  unit_price: number;
+  line_total: number;
+  sort_order: number;
+};
+
+export type FurnitureOrder = {
+  id: string;
+  order_number: string;
+  customer_name: string;
+  customer_address: string | null;
+  customer_phone: string;
+  due_date: string;
+  status: FurnitureOrderStatus;
+  subtotal: number;
+  grand_total: number;
+  deposit_paid: number;
+  outstanding_balance: number;
+  items: FurnitureOrderItem[];
+  source_quotation_id: string | null;
+  source_quotation_number: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type FurnitureDashboardSummary = {
+  orders: {
+    total: number;
+    pending: number;
+    in_progress: number;
+    completed: number;
+  };
+  financial: {
+    total_revenue: number;
+    deposits_made: number;
+    outstanding_balance: number;
+  };
+};
+
+export function getFurnitureStatus() {
+  return apiFetch<{ module: string; implemented: boolean; message: string }>(
+    "/api/v1/furniture/status",
+  );
+}
+
+export function getFurnitureDashboardSummary() {
+  return apiFetch<FurnitureDashboardSummary>("/api/v1/furniture/dashboard/summary");
+}
+
+export function listFurnitureOrders(q?: string) {
+  const suffix = q?.trim() ? `?${new URLSearchParams({ q: q.trim() }).toString()}` : "";
+  return apiFetch<{ items: FurnitureOrder[] }>(`/api/v1/furniture/orders${suffix}`);
+}
+
+export type FurnitureOrderItemInput = {
+  name: string;
+  description?: string | null;
+  quantity: number;
+  unit_price: number;
+};
+
+export function createFurnitureOrder(body: {
+  customer_name: string;
+  customer_address?: string | null;
+  customer_phone: string;
+  due_date: string;
+  items: FurnitureOrderItemInput[];
+  initial_deposit?: number;
+}) {
+  return apiFetch<FurnitureOrder>("/api/v1/furniture/orders", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function updateFurnitureOrderStatus(orderId: string, status: FurnitureOrderStatus) {
+  return apiFetch<FurnitureOrder>(`/api/v1/furniture/orders/${orderId}/status`, {
+    method: "PATCH",
+    body: JSON.stringify({ status }),
+  });
+}
+
+export function recordFurnitureOrderDeposit(
+  orderId: string,
+  body: { amount: number; note?: string | null },
+) {
+  return apiFetch<FurnitureOrder>(`/api/v1/furniture/orders/${orderId}/deposits`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+async function apiFetchBlob(path: string, init?: RequestInit): Promise<Blob> {
+  const url = `${base()}${path.startsWith("/") ? path : `/${path}`}`;
+  const res = await fetch(url, {
+    ...init,
+    credentials: "include",
+    headers: {
+      ...(init?.headers ?? {}),
+    },
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    let msg = `Request failed (${res.status})`;
+    let code: string | undefined;
+    if (text) {
+      try {
+        const json = JSON.parse(text) as ApiErrorBody | Record<string, unknown>;
+        if (json && typeof json === "object") {
+          const top = json as ApiErrorBody;
+          if (typeof top.message === "string") {
+            msg = top.message;
+            code = top.code;
+          } else if ("detail" in json && json.detail && typeof json.detail === "object") {
+            const d = json.detail as { message?: string; code?: string };
+            if (typeof d.message === "string") msg = d.message;
+            if (typeof d.code === "string") code = d.code;
+          }
+        }
+      } catch {
+        // non-JSON error body
+      }
+    }
+    throw new ApiError(res.status, msg, code);
+  }
+
+  return res.blob();
+}
+
+export type FurnitureQuotationStatus = "draft" | "finalized" | "converted";
+
+export type FurnitureQuotationItem = FurnitureOrderItem;
+
+export type FurnitureQuotation = {
+  id: string;
+  quotation_number: string;
+  customer_name: string;
+  customer_address: string | null;
+  customer_phone: string;
+  date_issued: string;
+  status: FurnitureQuotationStatus;
+  subtotal: number;
+  discount: number;
+  tax: number;
+  grand_total: number;
+  items: FurnitureQuotationItem[];
+  created_by: string | null;
+  created_by_user_id: string | null;
+  converted_order_id: string | null;
+  converted_order_number: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type FurnitureQuotationPaymentSettings = {
+  account_name: string | null;
+  account_number: string | null;
+  bank_name: string | null;
+  terms_text: string;
+  primary_phone: string | null;
+  secondary_phone: string | null;
+  instagram_handle: string | null;
+  company_address: string | null;
+};
+
+export function listFurnitureQuotations(q?: string) {
+  const suffix = q?.trim() ? `?${new URLSearchParams({ q: q.trim() }).toString()}` : "";
+  return apiFetch<{ items: FurnitureQuotation[] }>(`/api/v1/furniture/quotations${suffix}`);
+}
+
+export function getFurnitureQuotation(quotationId: string) {
+  return apiFetch<FurnitureQuotation>(`/api/v1/furniture/quotations/${quotationId}`);
+}
+
+export function createFurnitureQuotation(body: {
+  customer_name: string;
+  customer_address?: string | null;
+  customer_phone: string;
+  date_issued: string;
+  items: FurnitureOrderItemInput[];
+  discount?: number;
+  tax?: number;
+}) {
+  return apiFetch<FurnitureQuotation>("/api/v1/furniture/quotations", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function updateFurnitureQuotation(
+  quotationId: string,
+  body: {
+    customer_name: string;
+    customer_address?: string | null;
+    customer_phone: string;
+    date_issued: string;
+    items: FurnitureOrderItemInput[];
+    discount?: number;
+    tax?: number;
+  },
+) {
+  return apiFetch<FurnitureQuotation>(`/api/v1/furniture/quotations/${quotationId}`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+export function finalizeFurnitureQuotation(quotationId: string) {
+  return apiFetch<FurnitureQuotation>(`/api/v1/furniture/quotations/${quotationId}/finalize`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export function convertFurnitureQuotationToOrder(
+  quotationId: string,
+  body?: { due_date?: string | null },
+) {
+  return apiFetch<{ quotation: FurnitureQuotation; order: FurnitureOrder }>(
+    `/api/v1/furniture/quotations/${quotationId}/convert`,
+    {
+      method: "POST",
+      body: JSON.stringify(body ?? {}),
+    },
+  );
+}
+
+export function downloadFurnitureQuotationPdf(quotationId: string) {
+  return apiFetchBlob(`/api/v1/furniture/quotations/${quotationId}/pdf`);
+}
+
+export function getFurnitureQuotationPaymentSettings() {
+  return apiFetch<FurnitureQuotationPaymentSettings>(
+    "/api/v1/furniture/quotations/payment-settings",
+  );
+}
+
+export function updateFurnitureQuotationPaymentSettings(
+  body: Partial<FurnitureQuotationPaymentSettings>,
+) {
+  return apiFetch<FurnitureQuotationPaymentSettings>(
+    "/api/v1/furniture/quotations/payment-settings",
+    {
+      method: "PUT",
+      body: JSON.stringify(body),
+    },
+  );
+}

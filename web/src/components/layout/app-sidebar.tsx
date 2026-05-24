@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 import * as React from "react";
 
 import { RemarkableWordmark } from "@/components/branding/remarkable-logo";
+import { WorkspaceSwitcher } from "@/components/layout/workspace-switcher";
 import { useReconciliationCounts } from "@/components/ops/reconciliation-counts-context";
 import { useAuth } from "@/components/providers/auth-provider";
 import { Button } from "@/components/ui/button";
@@ -16,8 +17,9 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { barbershopNav, filterNavForRole } from "@/lib/navigation";
-import { getHomePath } from "@/lib/routing";
+import { filterNavForRole, getNavForPath } from "@/lib/navigation";
+import { getWorkspaceHomePath } from "@/lib/routing";
+import { getActiveWorkspace, canSwitchOperationalWorkspace } from "@/lib/workspace";
 import { cn } from "@/lib/utils";
 
 const STORAGE_KEY = "remarkable:sidebar-collapsed";
@@ -31,6 +33,8 @@ export function AppSidebar({ className }: AppSidebarProps) {
   const pathname = usePathname();
   const { session, logout } = useAuth();
   const [collapsed, setCollapsed] = React.useState(false);
+  const activeWorkspace = getActiveWorkspace(pathname);
+  const showWorkspaceSwitcher = canSwitchOperationalWorkspace(session?.role);
 
   React.useEffect(() => {
     const id = requestAnimationFrame(() => {
@@ -55,8 +59,8 @@ export function AppSidebar({ className }: AppSidebarProps) {
     });
   };
 
-  const items = filterNavForRole(barbershopNav, session?.role);
-  const homeHref = getHomePath(session?.role);
+  const items = filterNavForRole(getNavForPath(pathname), session?.role);
+  const homeHref = getWorkspaceHomePath(pathname, session?.role);
   const { pendingCount } = useReconciliationCounts();
 
   const widthClass = collapsed ? "w-[var(--sidebar-collapsed)]" : "w-[var(--sidebar-width)]";
@@ -82,9 +86,22 @@ export function AppSidebar({ className }: AppSidebarProps) {
             collapsed ? "flex justify-center" : "w-full",
           )}
         >
-          <RemarkableWordmark variant={collapsed ? "compact" : "full"} />
+          <RemarkableWordmark
+            variant={collapsed ? "compact" : "full"}
+            module={activeWorkspace}
+          />
         </Link>
       </div>
+      {showWorkspaceSwitcher ? (
+        <div
+          className={cn(
+            "shrink-0 border-b border-[var(--border)]",
+            collapsed ? "flex justify-center px-2 py-2" : "px-3 py-2.5",
+          )}
+        >
+          <WorkspaceSwitcher layout={collapsed ? "compact" : "default"} />
+        </div>
+      ) : null}
       <nav className="flex flex-1 flex-col gap-0.5 p-2">
         {items.map((item) => {
           const active =

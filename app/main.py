@@ -25,12 +25,12 @@ from app.routers import (
     barbershop_ledger,
     dashboard,
     finance,
-    furniture,
     health,
     manager_reconciliation,
     me,
     notifications,
 )
+from app.furniture.routers import router as furniture_router
 
 
 @asynccontextmanager
@@ -105,5 +105,5 @@ api_v1.include_router(barbershop_directory.router)
 api_v1.include_router(barbershop_ledger.router)
 api_v1.include_router(barbershop_analytics.router)
 api_v1.include_router(barbershop_attendance.router)
-api_v1.include_router(furniture.router)
+api_v1.include_router(furniture_router)
 app.include_router(api_v1)

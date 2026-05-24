@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.core.config import settings
 from app.database.base import Base
 from app.models import *  # noqa: F401,F403
+import app.furniture.models  # noqa: F401 — register furniture tables with Alembic
 
 config = context.config
 if config.config_file_name is not None:

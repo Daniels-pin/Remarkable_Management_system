@@ -1,0 +1,1 @@
+"""Furniture domain Pydantic schemas."""

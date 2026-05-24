@@ -6,7 +6,7 @@ import { usePathname } from "next/navigation";
 import { useAuth } from "@/components/providers/auth-provider";
 import { OperationalAlertBadge } from "@/components/ui/operational-alert-badge";
 import { useReconciliationCounts } from "@/components/ops/reconciliation-counts-context";
-import { barbershopNav, filterNavForRole } from "@/lib/navigation";
+import { filterNavForRole, getNavForPath } from "@/lib/navigation";
 import { cn } from "@/lib/utils";
 
 const DAILY_LEDGER_HREF = "/barbershop/daily-ledger";
@@ -14,7 +14,7 @@ const DAILY_LEDGER_HREF = "/barbershop/daily-ledger";
 export function MobileSidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
   const { session } = useAuth();
-  const items = filterNavForRole(barbershopNav, session?.role);
+  const items = filterNavForRole(getNavForPath(pathname), session?.role);
   const { pendingCount } = useReconciliationCounts();
 
   return (

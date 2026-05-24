@@ -1,4 +1,4 @@
-"""Furniture module placeholder — API surface reserved, logic not implemented."""
+"""Furniture module — orders and quotations operational domain."""
 
 MODULE_KEY = "furniture"
-IMPLEMENTED = False
+IMPLEMENTED = True

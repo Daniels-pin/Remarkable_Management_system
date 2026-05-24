@@ -9,6 +9,10 @@ import {
   getDeniedBarbershopPath,
   isBarbershopPathAllowed,
 } from "@/lib/barbershop-access";
+import {
+  getDeniedFurniturePath,
+  isFurniturePathAllowed,
+} from "@/lib/furniture-access";
 import { isManagerUp } from "@/lib/roles";
 import { getPostAuthPath } from "@/lib/routing";
 
@@ -144,6 +148,25 @@ export function RequireBarbershopRoute({ children }: { children: React.ReactNode
 
   if (loading) return <LoadingScreen />;
   if (!session || !isBarbershopPathAllowed(pathname, session.role)) return <LoadingScreen />;
+  return <>{children}</>;
+}
+
+/** Furniture workspace — admin-only operational domain. */
+export function RequireFurnitureRoute({ children }: { children: React.ReactNode }) {
+  const { session, loading } = useAuth();
+  const router = useRouter();
+  const pathname = usePathname();
+
+  React.useEffect(() => {
+    if (loading) return;
+    if (!session) return;
+    if (!isFurniturePathAllowed(pathname, session.role)) {
+      router.replace(getDeniedFurniturePath(session.role));
+    }
+  }, [session, loading, pathname, router]);
+
+  if (loading) return <LoadingScreen />;
+  if (!session || !isFurniturePathAllowed(pathname, session.role)) return <LoadingScreen />;
   return <>{children}</>;
 }
 

@@ -5,7 +5,9 @@ import {
   Clock3,
   CreditCard,
   LayoutDashboard,
+  Package,
   Receipt,
+  FileText,
   Settings2,
   UsersRound,
   UserCircle,
@@ -86,6 +88,33 @@ export const barbershopNav: NavItem[] = [
     icon: Bell,
   },
 ];
+
+/** Furniture operational navigation — isolated from barbershop workflows. */
+export const furnitureNav: NavItem[] = [
+  {
+    label: "Dashboard",
+    href: "/furniture/dashboard",
+    icon: LayoutDashboard,
+    roles: ["admin"],
+  },
+  {
+    label: "Orders",
+    href: "/furniture/orders",
+    icon: Package,
+    roles: ["admin"],
+  },
+  {
+    label: "Quotations",
+    href: "/furniture/quotations",
+    icon: FileText,
+    roles: ["admin"],
+  },
+];
+
+export function getNavForPath(pathname: string): NavItem[] {
+  if (pathname.startsWith("/furniture")) return furnitureNav;
+  return barbershopNav;
+}
 
 export function filterNavForRole(
   items: NavItem[],

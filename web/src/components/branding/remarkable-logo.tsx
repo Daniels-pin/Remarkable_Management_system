@@ -8,6 +8,18 @@ import { cn } from "@/lib/utils";
 
 const LOGO_SRC = "/branding/remarkable-barbershop.png";
 
+export type BusinessModuleBrand = "barbershop" | "furniture";
+
+const MODULE_LABEL: Record<BusinessModuleBrand, string> = {
+  barbershop: "BARBERSHOP",
+  furniture: "FURNITURE",
+};
+
+const MODULE_ARIA: Record<BusinessModuleBrand, string> = {
+  barbershop: "Remarkable Barbershop",
+  furniture: "Remarkable Furniture",
+};
+
 type RemarkableLogoProps = {
   className?: string;
   /** Full lockup vs icon-only treatment (icon uses tighter crop visually via scale). */
@@ -96,6 +108,8 @@ type RemarkableWordmarkProps = {
   className?: string;
   /** Expanded sidebar: stacked lockup. Compact: typographic monogram for narrow rail. Header: dense for top bar. */
   variant?: "full" | "compact" | "header";
+  /** Operational module label beneath REMARKABLE. Defaults to barbershop for existing chrome. */
+  module?: BusinessModuleBrand;
 };
 
 /**
@@ -105,7 +119,11 @@ type RemarkableWordmarkProps = {
 export function RemarkableWordmark({
   className,
   variant = "full",
+  module = "barbershop",
 }: RemarkableWordmarkProps) {
+  const moduleLabel = MODULE_LABEL[module];
+  const ariaLabel = MODULE_ARIA[module];
+
   if (variant === "compact") {
     return (
       <span
@@ -113,7 +131,7 @@ export function RemarkableWordmark({
           "font-serif text-lg font-medium tracking-[0.32em] text-[var(--foreground)]",
           className,
         )}
-        aria-label="Remarkable Barbershop"
+        aria-label={ariaLabel}
       >
         R
       </span>
@@ -127,12 +145,13 @@ export function RemarkableWordmark({
           "flex flex-col items-start gap-0.5 leading-none",
           className,
         )}
+        aria-label={ariaLabel}
       >
         <span className="font-serif text-[11px] font-medium uppercase tracking-[0.26em] text-[var(--foreground)]">
           REMARKABLE
         </span>
         <span className="font-serif text-[8px] font-normal uppercase tracking-[0.24em] text-[var(--muted-foreground)]">
-          BARBERSHOP
+          {moduleLabel}
         </span>
       </div>
     );
@@ -141,12 +160,13 @@ export function RemarkableWordmark({
   return (
     <div
       className={cn("flex flex-col items-start gap-1 leading-none", className)}
+      aria-label={ariaLabel}
     >
       <span className="font-serif text-xs font-medium uppercase tracking-[0.3em] text-[var(--foreground)]">
         REMARKABLE
       </span>
       <span className="font-serif text-[9px] font-normal uppercase tracking-[0.22em] text-[var(--muted-foreground)]">
-        BARBERSHOP
+        {moduleLabel}
       </span>
     </div>
   );

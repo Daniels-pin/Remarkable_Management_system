@@ -2,20 +2,20 @@
 
 import { useOperationalPageHeader } from "@/components/layout/page-header-context";
 
-type BarbershopShellProps = {
+type FurnitureShellProps = {
   title: string;
   subtitle?: string;
   children: React.ReactNode;
   headerActions?: React.ReactNode;
 };
 
-/** Sets barbershop page header metadata; chrome lives in the section layout. */
-export function BarbershopShell({
+/** Sets furniture page header metadata; chrome lives in the section layout. */
+export function FurnitureShell({
   title,
   subtitle,
   children,
   headerActions,
-}: BarbershopShellProps) {
+}: FurnitureShellProps) {
   useOperationalPageHeader({ title, subtitle, headerActions });
   return <>{children}</>;
 }

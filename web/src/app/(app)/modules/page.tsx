@@ -17,10 +17,9 @@ const modules = [
   },
   {
     title: "Furniture",
-    description: "Showroom and inventory operations — available when launched.",
-    href: "/furniture",
+    description: "Orders, production tracking, and showroom financial posture.",
+    href: "/furniture/dashboard",
     icon: Sofa,
-    comingSoon: true,
   },
 ] as const;
 
