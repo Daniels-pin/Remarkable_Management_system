@@ -4,7 +4,7 @@ import uuid
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import Date, Enum, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Date, Enum, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -63,6 +63,9 @@ class FurnitureQuotation(Base, TimestampMixin):
         default=FurnitureQuotationStatus.DRAFT,
         index=True,
     )
+    is_autosave_session: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, index=True
+    )
 
     subtotal: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
     discount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, default=Decimal("0"))
@@ -88,11 +91,43 @@ class FurnitureQuotation(Base, TimestampMixin):
         cascade="all, delete-orphan",
         order_by="FurnitureQuotationItem.sort_order",
     )
+    sections: Mapped[list[FurnitureQuotationSection]] = relationship(
+        "FurnitureQuotationSection",
+        back_populates="quotation",
+        cascade="all, delete-orphan",
+        order_by="FurnitureQuotationSection.sort_order",
+    )
 
     __table_args__ = (
         UniqueConstraint(
             "sequence_year", "sequence_index", name="uq_furniture_quotation_year_index"
         ),
+    )
+
+
+class FurnitureQuotationSection(Base):
+    __tablename__ = "furniture_quotation_sections"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    quotation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("furniture_quotations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+
+    quotation: Mapped[FurnitureQuotation] = relationship(
+        "FurnitureQuotation", back_populates="sections"
+    )
+    items: Mapped[list[FurnitureQuotationItem]] = relationship(
+        "FurnitureQuotationItem",
+        back_populates="section",
+        cascade="all, delete-orphan",
+        order_by="FurnitureQuotationItem.sort_order",
     )
 
 
@@ -108,6 +143,12 @@ class FurnitureQuotationItem(Base):
         nullable=False,
         index=True,
     )
+    section_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("furniture_quotation_sections.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     name: Mapped[str] = mapped_column(String(200), nullable=False)
@@ -118,4 +159,7 @@ class FurnitureQuotationItem(Base):
 
     quotation: Mapped[FurnitureQuotation] = relationship(
         "FurnitureQuotation", back_populates="items"
+    )
+    section: Mapped[FurnitureQuotationSection | None] = relationship(
+        "FurnitureQuotationSection", back_populates="items"
     )

@@ -110,25 +110,55 @@ export function FurnitureQuotationDocument({
               </tr>
             </thead>
             <tbody>
-              {quotation.items.map((item, index) => (
-                <tr
-                  key={item.id}
-                  className={cn(
-                    "border-x border-b border-[#dddddd]",
-                    index % 2 === 1 && "bg-[#fafafa]",
-                  )}
-                >
-                  <td className="px-2 py-2 align-top font-semibold">{item.name}</td>
-                  <td className="px-2 py-2 align-top text-[#555555]">
-                    {item.description || "—"}
+              {(quotation.sections?.length ? quotation.sections : []).flatMap((section) => [
+                <tr key={`section-${section.id}`} className="border-x border-b border-[#dddddd] bg-[#f0f0f0]">
+                  <td colSpan={5} className="px-2 py-3 align-top">
+                    <p className="text-[10pt] font-bold uppercase tracking-[0.08em] text-[#1a1a1a]">
+                      {section.title}
+                    </p>
                   </td>
-                  <td className="px-2 py-2 text-center align-top">{item.quantity}</td>
-                  <td className="px-2 py-2 text-right align-top">{formatNaira(item.unit_price)}</td>
-                  <td className="px-2 py-2 text-right align-top font-semibold">
-                    {formatNaira(item.line_total)}
-                  </td>
-                </tr>
-              ))}
+                </tr>,
+                ...section.items.map((item, index) => (
+                  <tr
+                    key={item.id}
+                    className={cn(
+                      "border-x border-b border-[#dddddd]",
+                      index % 2 === 1 && "bg-[#fafafa]",
+                    )}
+                  >
+                    <td className="px-2 py-2 align-top font-semibold">{item.name}</td>
+                    <td className="px-2 py-2 align-top text-[#555555]">
+                      {item.description || "—"}
+                    </td>
+                    <td className="px-2 py-2 text-center align-top">{item.quantity}</td>
+                    <td className="px-2 py-2 text-right align-top">{formatNaira(item.unit_price)}</td>
+                    <td className="px-2 py-2 text-right align-top font-semibold">
+                      {formatNaira(item.line_total)}
+                    </td>
+                  </tr>
+                )),
+              ])}
+              {!quotation.sections?.length
+                ? quotation.items.map((item, index) => (
+                    <tr
+                      key={item.id}
+                      className={cn(
+                        "border-x border-b border-[#dddddd]",
+                        index % 2 === 1 && "bg-[#fafafa]",
+                      )}
+                    >
+                      <td className="px-2 py-2 align-top font-semibold">{item.name}</td>
+                      <td className="px-2 py-2 align-top text-[#555555]">
+                        {item.description || "—"}
+                      </td>
+                      <td className="px-2 py-2 text-center align-top">{item.quantity}</td>
+                      <td className="px-2 py-2 text-right align-top">{formatNaira(item.unit_price)}</td>
+                      <td className="px-2 py-2 text-right align-top font-semibold">
+                        {formatNaira(item.line_total)}
+                      </td>
+                    </tr>
+                  ))
+                : null}
             </tbody>
           </table>
         </section>

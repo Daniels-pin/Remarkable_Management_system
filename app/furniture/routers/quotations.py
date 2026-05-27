@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.core.deps import ActorContext, get_admin_actor, get_db
 from app.furniture.schemas.quotations import (
+    FurnitureQuotationAutosaveBody,
     FurnitureQuotationConvertBody,
     FurnitureQuotationCreate,
     FurnitureQuotationPaymentSettingsUpdate,
@@ -57,6 +58,38 @@ def update_payment_settings(
     settings = quotation_service.update_payment_settings(db, body)
     db.commit()
     return quotation_service.payment_settings_to_dict(settings)
+
+
+@router.get("/active-autosave")
+def get_active_autosave(
+    db: Session = Depends(get_db),
+    actor: ActorContext = Depends(get_admin_actor),
+) -> dict:
+    row = quotation_service.get_active_autosave_draft(db, user_id=actor.user.id)
+    if row is None:
+        return {"draft": None}
+    return {"draft": quotation_service.quotation_to_dict(db, row)}
+
+
+@router.put("/autosave")
+def autosave_quotation(
+    body: FurnitureQuotationAutosaveBody,
+    db: Session = Depends(get_db),
+    actor: ActorContext = Depends(get_admin_actor),
+) -> dict:
+    row = quotation_service.autosave_quotation(db, body, user_id=actor.user.id)
+    db.commit()
+    return quotation_service.quotation_to_dict(db, row)
+
+
+@router.delete("/active-autosave")
+def discard_active_autosave(
+    db: Session = Depends(get_db),
+    actor: ActorContext = Depends(get_admin_actor),
+) -> dict:
+    discarded = quotation_service.discard_active_autosave_draft(db, user_id=actor.user.id)
+    db.commit()
+    return {"discarded": discarded}
 
 
 @router.get("/{quotation_id}")

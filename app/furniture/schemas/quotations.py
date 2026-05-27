@@ -13,21 +13,29 @@ class FurnitureQuotationItemCreate(BaseModel):
     unit_price: Decimal = Field(ge=0)
 
 
+class FurnitureQuotationSectionCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    items: list[FurnitureQuotationItemCreate] = Field(default_factory=list)
+
+
 class FurnitureQuotationCreate(BaseModel):
     customer_name: str = Field(min_length=1, max_length=200)
     customer_address: str | None = None
     customer_phone: str = Field(min_length=1, max_length=40)
     date_issued: date
-    items: list[FurnitureQuotationItemCreate] = Field(min_length=1)
+    sections: list[FurnitureQuotationSectionCreate] = Field(min_length=1)
     discount: Decimal = Field(default=Decimal("0"), ge=0)
     tax: Decimal = Field(default=Decimal("0"), ge=0)
 
-    @field_validator("items")
+    @field_validator("sections")
     @classmethod
-    def validate_items(
-        cls, value: list[FurnitureQuotationItemCreate]
-    ) -> list[FurnitureQuotationItemCreate]:
+    def validate_sections(
+        cls, value: list[FurnitureQuotationSectionCreate]
+    ) -> list[FurnitureQuotationSectionCreate]:
         if not value:
+            raise ValueError("At least one quotation section is required.")
+        priced_items = [item for section in value for item in section.items]
+        if not priced_items:
             raise ValueError("At least one quotation item is required.")
         return value
 
@@ -37,7 +45,7 @@ class FurnitureQuotationUpdate(BaseModel):
     customer_address: str | None = None
     customer_phone: str = Field(min_length=1, max_length=40)
     date_issued: date
-    items: list[FurnitureQuotationItemCreate] = Field(min_length=1)
+    sections: list[FurnitureQuotationSectionCreate] = Field(min_length=1)
     discount: Decimal = Field(default=Decimal("0"), ge=0)
     tax: Decimal = Field(default=Decimal("0"), ge=0)
 
@@ -55,3 +63,27 @@ class FurnitureQuotationPaymentSettingsUpdate(BaseModel):
 
 class FurnitureQuotationConvertBody(BaseModel):
     due_date: date | None = None
+
+
+class FurnitureQuotationAutosaveItemCreate(BaseModel):
+    name: str = Field(default="", max_length=200)
+    description: str | None = None
+    quantity: int = Field(default=0, ge=0)
+    unit_price: Decimal = Field(default=Decimal("0"), ge=0)
+
+
+class FurnitureQuotationAutosaveSectionCreate(BaseModel):
+    title: str = Field(default="", max_length=200)
+    items: list[FurnitureQuotationAutosaveItemCreate] = Field(default_factory=list)
+
+
+class FurnitureQuotationAutosaveBody(BaseModel):
+    quotation_id: str | None = None
+    customer_name: str = Field(default="", max_length=200)
+    customer_address: str | None = None
+    customer_phone: str = Field(default="", max_length=40)
+    date_issued: date
+    sections: list[FurnitureQuotationAutosaveSectionCreate] = Field(default_factory=list)
+    discount: Decimal = Field(default=Decimal("0"), ge=0)
+    tax: Decimal = Field(default=Decimal("0"), ge=0)
+    promote: bool = False

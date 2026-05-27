@@ -6,22 +6,57 @@ from io import BytesIO
 from pathlib import Path
 
 from reportlab.lib import colors
-from reportlab.lib.enums import TA_CENTER
+from reportlab.lib.enums import TA_CENTER, TA_RIGHT
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.lib.utils import ImageReader
-from reportlab.platypus import HRFlowable, Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.platypus import (
+    HRFlowable,
+    Image,
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
+)
 
 from app.furniture.models.quotation import FurnitureQuotation, FurnitureQuotationPaymentSettings
 
 LOGO_PATH = Path(__file__).resolve().parent.parent / "assets" / "quotation-logo.png"
+FONT_DIR = Path(__file__).resolve().parent.parent / "assets" / "fonts"
+FONT_REGULAR = "FurnitureNotoSans"
+FONT_BOLD = "FurnitureNotoSans-Bold"
 LOGO_WIDTH_MM = 34
+_FONTS_REGISTERED = False
+
+
+def _ensure_pdf_fonts() -> None:
+    global _FONTS_REGISTERED
+    if _FONTS_REGISTERED:
+        return
+
+    regular_path = FONT_DIR / "NotoSans-Regular.ttf"
+    bold_path = FONT_DIR / "NotoSans-Bold.ttf"
+    if not regular_path.exists() or not bold_path.exists():
+        msg = "Furniture quotation fonts are missing from app/furniture/assets/fonts"
+        raise FileNotFoundError(msg)
+
+    pdfmetrics.registerFont(TTFont(FONT_REGULAR, str(regular_path)))
+    pdfmetrics.registerFont(TTFont(FONT_BOLD, str(bold_path)))
+    _FONTS_REGISTERED = True
 
 
 def _format_naira(amount: Decimal | float) -> str:
     value = Decimal(str(amount)).quantize(Decimal("0.01"))
     return f"₦{value:,.2f}"
+
+
+def _currency_paragraph(amount: Decimal | float, styles: dict, *, bold: bool = False) -> Paragraph:
+    style_key = "currencyBold" if bold else "currency"
+    return Paragraph(_format_naira(amount), styles[style_key])
 
 
 def _format_date(value: date | str) -> str:
@@ -49,6 +84,7 @@ def generate_quotation_pdf(
     quotation: FurnitureQuotation,
     payment_settings: FurnitureQuotationPaymentSettings,
 ) -> bytes:
+    _ensure_pdf_fonts()
     buffer = BytesIO()
     doc = SimpleDocTemplate(
         buffer,
@@ -124,6 +160,43 @@ def generate_quotation_pdf(
             alignment=TA_CENTER,
             textColor=colors.HexColor("#666666"),
         ),
+        "currency": ParagraphStyle(
+            "Currency",
+            parent=base_styles["Normal"],
+            fontName=FONT_REGULAR,
+            fontSize=9,
+            leading=12,
+            alignment=TA_RIGHT,
+            textColor=colors.HexColor("#333333"),
+        ),
+        "currencyBold": ParagraphStyle(
+            "CurrencyBold",
+            parent=base_styles["Normal"],
+            fontName=FONT_BOLD,
+            fontSize=11,
+            leading=14,
+            alignment=TA_RIGHT,
+            textColor=colors.HexColor("#1a1a1a"),
+        ),
+        "currencyDiscount": ParagraphStyle(
+            "CurrencyDiscount",
+            parent=base_styles["Normal"],
+            fontName=FONT_REGULAR,
+            fontSize=9,
+            leading=12,
+            alignment=TA_RIGHT,
+            textColor=colors.HexColor("#333333"),
+        ),
+        "groupHeading": ParagraphStyle(
+            "GroupHeading",
+            parent=base_styles["Normal"],
+            fontName="Helvetica-Bold",
+            fontSize=10,
+            leading=13,
+            textColor=colors.HexColor("#1a1a1a"),
+            spaceBefore=4,
+            spaceAfter=2,
+        ),
     }
 
     story: list = []
@@ -185,50 +258,96 @@ def generate_quotation_pdf(
     story.append(customer_table)
     story.append(Spacer(1, 8 * mm))
 
-    item_rows = [["Item", "Description", "Qty", "Unit Price", "Line Total"]]
-    for item in quotation.items:
-        item_rows.append(
-            [
-                Paragraph(item.name, styles["valueBold"]),
-                Paragraph(item.description or "—", styles["value"]),
-                str(item.quantity),
-                _format_naira(item.unit_price),
-                _format_naira(item.line_total),
-            ]
-        )
+    item_rows: list[list] = [["Item", "Description", "Qty", "Unit Price", "Line Total"]]
+    sections = quotation.sections or []
+    if sections:
+        for section in sections:
+            item_rows.append(
+                [
+                    Paragraph(section.title.upper(), styles["groupHeading"]),
+                    "",
+                    "",
+                    "",
+                    "",
+                ]
+            )
+            for item in section.items:
+                item_rows.append(
+                    [
+                        Paragraph(item.name, styles["valueBold"]),
+                        Paragraph(item.description or "—", styles["value"]),
+                        str(item.quantity),
+                        _currency_paragraph(item.unit_price, styles),
+                        _currency_paragraph(item.line_total, styles),
+                    ]
+                )
+    else:
+        for item in quotation.items:
+            item_rows.append(
+                [
+                    Paragraph(item.name, styles["valueBold"]),
+                    Paragraph(item.description or "—", styles["value"]),
+                    str(item.quantity),
+                    _currency_paragraph(item.unit_price, styles),
+                    _currency_paragraph(item.line_total, styles),
+                ]
+            )
 
     col_widths = [36 * mm, 60 * mm, 12 * mm, 28 * mm, 28 * mm]
     items_table = Table(item_rows, colWidths=col_widths, repeatRows=1)
-    items_table.setStyle(
-        TableStyle(
+    section_row_indexes = []
+    if sections:
+        row_index = 1
+        for section in sections:
+            section_row_indexes.append(row_index)
+            row_index += 1 + len(section.items)
+
+    table_style_commands = [
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f5f5f5")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#666666")),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, 0), 7.5),
+        ("FONTSIZE", (0, 1), (-1, -1), 9),
+        ("ALIGN", (0, 0), (-1, 0), "LEFT"),
+        ("ALIGN", (2, 1), (2, -1), "CENTER"),
+        ("ALIGN", (3, 0), (-1, -1), "RIGHT"),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#dddddd")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#fafafa")]),
+        ("TOPPADDING", (0, 0), (-1, -1), 7),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+    ]
+    for row_index in section_row_indexes:
+        table_style_commands.extend(
             [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f5f5f5")),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#666666")),
-                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("FONTSIZE", (0, 0), (-1, 0), 7.5),
-                ("FONTSIZE", (0, 1), (-1, -1), 9),
-                ("ALIGN", (0, 0), (-1, 0), "LEFT"),
-                ("ALIGN", (2, 1), (2, -1), "CENTER"),
-                ("ALIGN", (3, 0), (-1, -1), "RIGHT"),
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#dddddd")),
-                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#fafafa")]),
-                ("TOPPADDING", (0, 0), (-1, -1), 7),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
-                ("LEFTPADDING", (0, 0), (-1, -1), 6),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("SPAN", (0, row_index), (-1, row_index)),
+                ("BACKGROUND", (0, row_index), (-1, row_index), colors.HexColor("#f0f0f0")),
+                ("TOPPADDING", (0, row_index), (-1, row_index), 10),
+                ("BOTTOMPADDING", (0, row_index), (-1, row_index), 6),
             ]
         )
-    )
+
+    items_table.setStyle(TableStyle(table_style_commands))
     story.append(items_table)
     story.append(Spacer(1, 6 * mm))
 
-    totals_data = [["Subtotal", _format_naira(quotation.subtotal)]]
+    totals_data: list[list] = [
+        ["Subtotal", _currency_paragraph(quotation.subtotal, styles)],
+    ]
     if quotation.discount and quotation.discount > 0:
-        totals_data.append(["Discount", f"-{_format_naira(quotation.discount)}"])
+        totals_data.append(
+            [
+                "Discount",
+                Paragraph(f"-{_format_naira(quotation.discount)}", styles["currencyDiscount"]),
+            ]
+        )
     if quotation.tax and quotation.tax > 0:
-        totals_data.append(["Tax", _format_naira(quotation.tax)])
-    totals_data.append(["Grand Total", _format_naira(quotation.grand_total)])
+        totals_data.append(["Tax", _currency_paragraph(quotation.tax, styles)])
+    totals_data.append(
+        ["Grand Total", _currency_paragraph(quotation.grand_total, styles, bold=True)]
+    )
 
     totals_table = Table(totals_data, colWidths=[doc.width - 42 * mm, 42 * mm], hAlign="RIGHT")
     totals_table.setStyle(

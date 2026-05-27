@@ -1438,6 +1438,14 @@ export type FurnitureOrderItem = {
   unit_price: number;
   line_total: number;
   sort_order: number;
+  section_id?: string | null;
+};
+
+export type FurnitureQuotationSection = {
+  id: string;
+  title: string;
+  sort_order: number;
+  items: FurnitureQuotationItem[];
 };
 
 export type FurnitureOrder = {
@@ -1493,6 +1501,11 @@ export type FurnitureOrderItemInput = {
   description?: string | null;
   quantity: number;
   unit_price: number;
+};
+
+export type FurnitureQuotationSectionInput = {
+  title: string;
+  items: FurnitureOrderItemInput[];
 };
 
 export function createFurnitureOrder(body: {
@@ -1580,6 +1593,7 @@ export type FurnitureQuotation = {
   discount: number;
   tax: number;
   grand_total: number;
+  sections: FurnitureQuotationSection[];
   items: FurnitureQuotationItem[];
   created_by: string | null;
   created_by_user_id: string | null;
@@ -1587,6 +1601,7 @@ export type FurnitureQuotation = {
   converted_order_number: string | null;
   created_at: string;
   updated_at: string;
+  is_autosave_session?: boolean;
 };
 
 export type FurnitureQuotationPaymentSettings = {
@@ -1614,7 +1629,7 @@ export function createFurnitureQuotation(body: {
   customer_address?: string | null;
   customer_phone: string;
   date_issued: string;
-  items: FurnitureOrderItemInput[];
+  sections: FurnitureQuotationSectionInput[];
   discount?: number;
   tax?: number;
 }) {
@@ -1631,7 +1646,7 @@ export function updateFurnitureQuotation(
     customer_address?: string | null;
     customer_phone: string;
     date_issued: string;
-    items: FurnitureOrderItemInput[];
+    sections: FurnitureQuotationSectionInput[];
     discount?: number;
     tax?: number;
   },
@@ -1682,4 +1697,41 @@ export function updateFurnitureQuotationPaymentSettings(
       body: JSON.stringify(body),
     },
   );
+}
+
+export function getFurnitureQuotationActiveAutosave() {
+  return apiFetch<{ draft: FurnitureQuotation | null }>(
+    "/api/v1/furniture/quotations/active-autosave",
+  );
+}
+
+export function autosaveFurnitureQuotation(body: {
+  quotation_id?: string | null;
+  customer_name?: string;
+  customer_address?: string | null;
+  customer_phone?: string;
+  date_issued: string;
+  sections: Array<{
+    title: string;
+    items: Array<{
+      name: string;
+      description?: string | null;
+      quantity: number;
+      unit_price: number;
+    }>;
+  }>;
+  discount?: number;
+  tax?: number;
+  promote?: boolean;
+}) {
+  return apiFetch<FurnitureQuotation>("/api/v1/furniture/quotations/autosave", {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+export function discardFurnitureQuotationActiveAutosave() {
+  return apiFetch<{ discarded: boolean }>("/api/v1/furniture/quotations/active-autosave", {
+    method: "DELETE",
+  });
 }

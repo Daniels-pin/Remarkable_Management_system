@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import or_
@@ -18,9 +18,11 @@ from app.furniture.models.quotation import (
     FurnitureQuotation,
     FurnitureQuotationItem,
     FurnitureQuotationPaymentSettings,
+    FurnitureQuotationSection,
     FurnitureQuotationSequenceCounter,
 )
 from app.furniture.schemas.quotations import (
+    FurnitureQuotationAutosaveBody,
     FurnitureQuotationConvertBody,
     FurnitureQuotationCreate,
     FurnitureQuotationPaymentSettingsUpdate,
@@ -29,6 +31,9 @@ from app.furniture.schemas.quotations import (
 from app.models.user import User
 
 QUOTATION_NUMBER_PREFIX = "QUO"
+AUTOSAVE_CUSTOMER_NAME = "Draft"
+AUTOSAVE_CUSTOMER_PHONE = "-"
+AUTOSAVE_SECTION_TITLE = "Section"
 DEFAULT_TERMS = "This document is a quotation for pricing and negotiation only."
 DEFAULT_PRIMARY_PHONE = "+234 901 246 2061"
 DEFAULT_SECONDARY_PHONE = "+234 706 097 9362"
@@ -57,30 +62,124 @@ def allocate_quotation_sequence(db: Session, *, year: int | None = None) -> tupl
     return calendar_year, index
 
 
+def _build_item_row(item, *, sort_order: int) -> tuple[Decimal, FurnitureQuotationItem]:
+    if not item.name.strip():
+        raise ValidationAppError(
+            "Each quotation item must have a name.", code="ITEM_NAME_REQUIRED"
+        )
+    if item.quantity <= 0:
+        raise ValidationAppError("Quantity must be greater than zero.", code="INVALID_QUANTITY")
+    if item.unit_price < 0:
+        raise ValidationAppError("Unit price cannot be negative.", code="INVALID_UNIT_PRICE")
+    line_total = _money(item.quantity * item.unit_price)
+    row = FurnitureQuotationItem(
+        sort_order=sort_order,
+        name=item.name.strip(),
+        description=item.description.strip() if item.description else None,
+        quantity=item.quantity,
+        unit_price=_money(item.unit_price),
+        line_total=line_total,
+    )
+    return line_total, row
+
+
+def _build_sections(
+    sections: list,
+) -> tuple[Decimal, list[FurnitureQuotationSection]]:
+    subtotal = Decimal("0")
+    section_rows: list[FurnitureQuotationSection] = []
+    priced_item_count = 0
+
+    for section_idx, section in enumerate(sections):
+        title = section.title.strip()
+        if not title:
+            raise ValidationAppError(
+                "Each section subheading must have a title.", code="SECTION_TITLE_REQUIRED"
+            )
+
+        section_row = FurnitureQuotationSection(
+            sort_order=section_idx,
+            title=title,
+        )
+        section_items: list[FurnitureQuotationItem] = []
+
+        for item_idx, item in enumerate(section.items):
+            line_total, item_row = _build_item_row(item, sort_order=item_idx)
+            subtotal += line_total
+            priced_item_count += 1
+            section_items.append(item_row)
+
+        section_row.items = section_items
+        section_rows.append(section_row)
+
+    if priced_item_count == 0:
+        raise ValidationAppError(
+            "Quotation must have at least one priced item.", code="QUOTATION_EMPTY"
+        )
+
+    return _money(subtotal), section_rows
+
+
+def _build_item_row_autosave(
+    item, *, sort_order: int
+) -> tuple[Decimal, FurnitureQuotationItem] | None:
+    name = item.name.strip()
+    if not name:
+        return None
+    quantity = max(0, int(item.quantity))
+    unit_price = _money(item.unit_price)
+    line_total = _money(quantity * unit_price) if quantity > 0 else Decimal("0.00")
+    row = FurnitureQuotationItem(
+        sort_order=sort_order,
+        name=name,
+        description=item.description.strip() if item.description else None,
+        quantity=quantity if quantity > 0 else 1,
+        unit_price=unit_price,
+        line_total=line_total if quantity > 0 else Decimal("0.00"),
+    )
+    return line_total if quantity > 0 else Decimal("0.00"), row
+
+
+def _build_sections_autosave(
+    sections: list,
+) -> tuple[Decimal, list[FurnitureQuotationSection]]:
+    subtotal = Decimal("0")
+    section_rows: list[FurnitureQuotationSection] = []
+
+    if not sections:
+        return Decimal("0"), [
+            FurnitureQuotationSection(sort_order=0, title=AUTOSAVE_SECTION_TITLE, items=[])
+        ]
+
+    for section_idx, section in enumerate(sections):
+        title = section.title.strip() or AUTOSAVE_SECTION_TITLE
+        section_row = FurnitureQuotationSection(
+            sort_order=section_idx,
+            title=title,
+        )
+        section_items: list[FurnitureQuotationItem] = []
+
+        for item_idx, item in enumerate(section.items):
+            built = _build_item_row_autosave(item, sort_order=item_idx)
+            if built is None:
+                continue
+            line_total, item_row = built
+            subtotal += line_total
+            section_items.append(item_row)
+
+        section_row.items = section_items
+        section_rows.append(section_row)
+
+    return _money(subtotal), section_rows
+
+
 def _build_item_rows(items: list) -> tuple[Decimal, list[FurnitureQuotationItem]]:
     subtotal = Decimal("0")
     item_rows: list[FurnitureQuotationItem] = []
     for idx, item in enumerate(items):
-        if not item.name.strip():
-            raise ValidationAppError(
-                "Each quotation item must have a name.", code="ITEM_NAME_REQUIRED"
-            )
-        if item.quantity <= 0:
-            raise ValidationAppError("Quantity must be greater than zero.", code="INVALID_QUANTITY")
-        if item.unit_price < 0:
-            raise ValidationAppError("Unit price cannot be negative.", code="INVALID_UNIT_PRICE")
-        line_total = _money(item.quantity * item.unit_price)
+        line_total, row = _build_item_row(item, sort_order=idx)
         subtotal += line_total
-        item_rows.append(
-            FurnitureQuotationItem(
-                sort_order=idx,
-                name=item.name.strip(),
-                description=item.description.strip() if item.description else None,
-                quantity=item.quantity,
-                unit_price=_money(item.unit_price),
-                line_total=line_total,
-            )
-        )
+        item_rows.append(row)
     return _money(subtotal), item_rows
 
 
@@ -112,6 +211,16 @@ def quotation_item_to_dict(row: FurnitureQuotationItem) -> dict:
         "unit_price": float(row.unit_price),
         "line_total": float(row.line_total),
         "sort_order": row.sort_order,
+        "section_id": str(row.section_id) if row.section_id else None,
+    }
+
+
+def quotation_section_to_dict(section: FurnitureQuotationSection) -> dict:
+    return {
+        "id": str(section.id),
+        "title": section.title,
+        "sort_order": section.sort_order,
+        "items": [quotation_item_to_dict(item) for item in section.items],
     }
 
 
@@ -134,6 +243,7 @@ def quotation_to_dict(db: Session, quotation: FurnitureQuotation) -> dict:
         "discount": float(quotation.discount),
         "tax": float(quotation.tax),
         "grand_total": float(quotation.grand_total),
+        "sections": [quotation_section_to_dict(section) for section in quotation.sections],
         "items": [quotation_item_to_dict(i) for i in quotation.items],
         "created_by": _creator_display_name(db, quotation.created_by_user_id),
         "created_by_user_id": str(quotation.created_by_user_id)
@@ -145,6 +255,7 @@ def quotation_to_dict(db: Session, quotation: FurnitureQuotation) -> dict:
         "converted_order_number": converted_order_number,
         "created_at": quotation.created_at.isoformat(),
         "updated_at": quotation.updated_at.isoformat(),
+        "is_autosave_session": quotation.is_autosave_session,
     }
 
 
@@ -164,7 +275,10 @@ def payment_settings_to_dict(settings: FurnitureQuotationPaymentSettings) -> dic
 def _load_quotation(db: Session, quotation_id: uuid.UUID) -> FurnitureQuotation:
     quotation = (
         db.query(FurnitureQuotation)
-        .options(joinedload(FurnitureQuotation.items))
+        .options(
+            joinedload(FurnitureQuotation.sections).joinedload(FurnitureQuotationSection.items),
+            joinedload(FurnitureQuotation.items),
+        )
         .filter(FurnitureQuotation.id == quotation_id)
         .one_or_none()
     )
@@ -232,7 +346,7 @@ def update_payment_settings(
 def create_quotation(
     db: Session, body: FurnitureQuotationCreate, *, created_by_user_id: uuid.UUID
 ) -> FurnitureQuotation:
-    subtotal, item_rows = _build_item_rows(body.items)
+    subtotal, section_rows = _build_sections(body.sections)
     grand_total = _compute_grand_total(subtotal, body.discount, body.tax)
 
     year, index = allocate_quotation_sequence(db)
@@ -247,13 +361,17 @@ def create_quotation(
         customer_phone=body.customer_phone.strip(),
         date_issued=body.date_issued,
         status=FurnitureQuotationStatus.DRAFT,
+        is_autosave_session=False,
         subtotal=subtotal,
         discount=_money(body.discount),
         tax=_money(body.tax),
         grand_total=grand_total,
         created_by_user_id=created_by_user_id,
-        items=item_rows,
     )
+    for section in section_rows:
+        for item in section.items:
+            item.quotation = quotation
+        quotation.sections.append(section)
     db.add(quotation)
     db.flush()
     return _load_quotation(db, quotation.id)
@@ -262,7 +380,11 @@ def create_quotation(
 def list_quotations(db: Session, *, search: str | None = None) -> list[FurnitureQuotation]:
     q = (
         db.query(FurnitureQuotation)
-        .options(joinedload(FurnitureQuotation.items))
+        .options(
+            joinedload(FurnitureQuotation.sections).joinedload(FurnitureQuotationSection.items),
+            joinedload(FurnitureQuotation.items),
+        )
+        .filter(FurnitureQuotation.is_autosave_session.is_(False))
         .order_by(FurnitureQuotation.created_at.desc())
     )
     if search and search.strip():
@@ -287,7 +409,7 @@ def update_quotation(
     quotation = _load_quotation(db, quotation_id)
     _ensure_editable(quotation)
 
-    subtotal, item_rows = _build_item_rows(body.items)
+    subtotal, section_rows = _build_sections(body.sections)
     grand_total = _compute_grand_total(subtotal, body.discount, body.tax)
 
     quotation.customer_name = body.customer_name.strip()
@@ -302,11 +424,119 @@ def update_quotation(
     if quotation.status == FurnitureQuotationStatus.FINALIZED:
         quotation.status = FurnitureQuotationStatus.DRAFT
 
-    quotation.items.clear()
-    for row in item_rows:
-        quotation.items.append(row)
+    quotation.is_autosave_session = False
+
+    quotation.sections.clear()
+    for section in section_rows:
+        for item in section.items:
+            item.quotation = quotation
+        quotation.sections.append(section)
 
     db.add(quotation)
+    db.flush()
+    return _load_quotation(db, quotation.id)
+
+
+def get_active_autosave_draft(
+    db: Session, *, user_id: uuid.UUID
+) -> FurnitureQuotation | None:
+    return (
+        db.query(FurnitureQuotation)
+        .options(
+            joinedload(FurnitureQuotation.sections).joinedload(FurnitureQuotationSection.items),
+            joinedload(FurnitureQuotation.items),
+        )
+        .filter(
+            FurnitureQuotation.created_by_user_id == user_id,
+            FurnitureQuotation.is_autosave_session.is_(True),
+            FurnitureQuotation.status == FurnitureQuotationStatus.DRAFT,
+        )
+        .order_by(FurnitureQuotation.updated_at.desc())
+        .first()
+    )
+
+
+def discard_active_autosave_draft(db: Session, *, user_id: uuid.UUID) -> bool:
+    draft = get_active_autosave_draft(db, user_id=user_id)
+    if draft is None:
+        return False
+    db.delete(draft)
+    db.flush()
+    return True
+
+
+def autosave_quotation(
+    db: Session,
+    body: FurnitureQuotationAutosaveBody,
+    *,
+    user_id: uuid.UUID,
+) -> FurnitureQuotation:
+    subtotal, section_rows = _build_sections_autosave(body.sections)
+    discount = _money(body.discount)
+    tax = _money(body.tax)
+    if discount > subtotal:
+        discount = subtotal
+    grand_total = _money(subtotal - discount + tax)
+
+    customer_name = body.customer_name.strip() or AUTOSAVE_CUSTOMER_NAME
+    customer_phone = body.customer_phone.strip() or AUTOSAVE_CUSTOMER_PHONE
+    customer_address = body.customer_address.strip() if body.customer_address else None
+
+    quotation: FurnitureQuotation | None = None
+    if body.quotation_id:
+        try:
+            quotation_id = uuid.UUID(body.quotation_id)
+        except ValueError as exc:
+            raise ValidationAppError("Invalid quotation id.", code="INVALID_QUOTATION_ID") from exc
+        quotation = _load_quotation(db, quotation_id)
+        _ensure_editable(quotation)
+    else:
+        quotation = get_active_autosave_draft(db, user_id=user_id)
+
+    if quotation is None:
+        year, index = allocate_quotation_sequence(db)
+        quotation_number = _format_quotation_number(year, index)
+        quotation = FurnitureQuotation(
+            quotation_number=quotation_number,
+            sequence_year=year,
+            sequence_index=index,
+            customer_name=customer_name,
+            customer_address=customer_address,
+            customer_phone=customer_phone,
+            date_issued=body.date_issued,
+            status=FurnitureQuotationStatus.DRAFT,
+            is_autosave_session=not body.promote,
+            subtotal=subtotal,
+            discount=discount,
+            tax=tax,
+            grand_total=grand_total,
+            created_by_user_id=user_id,
+        )
+        for section in section_rows:
+            for item in section.items:
+                item.quotation = quotation
+            quotation.sections.append(section)
+        db.add(quotation)
+    else:
+        quotation.customer_name = customer_name
+        quotation.customer_address = customer_address
+        quotation.customer_phone = customer_phone
+        quotation.date_issued = body.date_issued
+        quotation.subtotal = subtotal
+        quotation.discount = discount
+        quotation.tax = tax
+        quotation.grand_total = grand_total
+        if body.promote:
+            quotation.is_autosave_session = False
+        elif quotation.is_autosave_session:
+            quotation.is_autosave_session = True
+        quotation.sections.clear()
+        for section in section_rows:
+            for item in section.items:
+                item.quotation = quotation
+            quotation.sections.append(section)
+        db.add(quotation)
+
     db.flush()
     return _load_quotation(db, quotation.id)
 
@@ -319,9 +549,13 @@ def finalize_quotation(db: Session, quotation_id: uuid.UUID) -> FurnitureQuotati
         )
     if quotation.status == FurnitureQuotationStatus.FINALIZED:
         return quotation
+    if quotation.is_autosave_session:
+        raise ValidationAppError(
+            "Save the quotation before finalizing.", code="QUOTATION_AUTOSAVE_SESSION"
+        )
     if not quotation.items:
         raise ValidationAppError(
-            "Quotation must have at least one item.", code="QUOTATION_EMPTY"
+            "Quotation must have at least one priced item.", code="QUOTATION_EMPTY"
         )
     quotation.status = FurnitureQuotationStatus.FINALIZED
     db.add(quotation)

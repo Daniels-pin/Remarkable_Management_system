@@ -14,6 +14,10 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
+  preventFurnitureFormEnterSubmit,
+  preventFurnitureFormNativeSubmit,
+} from "@/components/furniture/furniture-form-handlers";
+import {
   ApiError,
   getFurnitureQuotationPaymentSettings,
   updateFurnitureQuotationPaymentSettings,
@@ -58,8 +62,7 @@ export function FurnitureQuotationPaymentSettingsDialog({
       .finally(() => setLoading(false));
   }, [open]);
 
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const submit = async () => {
     if (!termsText.trim()) {
       toast.error("Terms text is required.");
       return;
@@ -92,7 +95,10 @@ export function FurnitureQuotationPaymentSettingsDialog({
         <DialogHeader>
           <DialogTitle>Quotation document settings</DialogTitle>
         </DialogHeader>
-        <form onSubmit={(e) => void submit(e)}>
+        <form
+          onSubmit={preventFurnitureFormNativeSubmit}
+          onKeyDown={preventFurnitureFormEnterSubmit}
+        >
           <DialogBody className="max-h-[min(70dvh,36rem)] space-y-8 overflow-y-auto">
             <p className="text-sm text-[var(--muted-foreground)]">
               Payment and company information appear automatically on generated quotations.
@@ -205,7 +211,12 @@ export function FurnitureQuotationPaymentSettingsDialog({
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button type="submit" disabled={loading || submitting} className="rounded-full">
+            <Button
+              type="button"
+              disabled={loading || submitting}
+              className="rounded-full"
+              onClick={() => void submit()}
+            >
               {submitting ? "Saving…" : "Save settings"}
             </Button>
           </div>

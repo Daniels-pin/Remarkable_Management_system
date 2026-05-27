@@ -14,7 +14,12 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { FurnitureOperationalAmountInput } from "@/components/furniture/furniture-operational-amount-input";
 import { FurnitureOperationalNumericInput } from "@/components/furniture/furniture-operational-numeric-input";
+import {
+  preventFurnitureFormEnterSubmit,
+  preventFurnitureFormNativeSubmit,
+} from "@/components/furniture/furniture-form-handlers";
 import { ApiError, createFurnitureOrder, type FurnitureOrderItemInput } from "@/lib/api";
 import { emitFurnitureUpdated } from "@/lib/furniture-events";
 import { formatNaira } from "@/lib/format";
@@ -81,8 +86,7 @@ export function CreateFurnitureOrderDialog({
 
   const addItem = () => setItems((rows) => [...rows, emptyItem()]);
 
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const submit = async () => {
     if (!customerName.trim()) {
       toast.error("Customer name is required.");
       return;
@@ -152,7 +156,10 @@ export function CreateFurnitureOrderDialog({
         <DialogHeader>
           <DialogTitle>Create furniture order</DialogTitle>
         </DialogHeader>
-        <form onSubmit={(e) => void submit(e)}>
+        <form
+          onSubmit={preventFurnitureFormNativeSubmit}
+          onKeyDown={preventFurnitureFormEnterSubmit}
+        >
           <DialogBody className="max-h-[min(70dvh,36rem)] space-y-8 overflow-y-auto">
             <section className="space-y-4">
               <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
@@ -256,7 +263,7 @@ export function CreateFurnitureOrderDialog({
                         <Label>Quantity</Label>
                         <FurnitureOperationalNumericInput
                           min={0}
-                          step={1}
+                          integerOnly
                           value={row.quantity}
                           defaultValue={0}
                           onValueChange={(quantity) => updateItem(row.key, { quantity })}
@@ -266,7 +273,6 @@ export function CreateFurnitureOrderDialog({
                         <Label>Unit price</Label>
                         <FurnitureOperationalNumericInput
                           min={0}
-                          step={100}
                           value={row.unit_price}
                           defaultValue={0}
                           onValueChange={(unit_price) => updateItem(row.key, { unit_price })}
@@ -304,13 +310,10 @@ export function CreateFurnitureOrderDialog({
               </div>
               <div className="space-y-2">
                 <Label htmlFor="initial-deposit">Initial deposit (optional)</Label>
-                <Input
+                <FurnitureOperationalAmountInput
                   id="initial-deposit"
-                  type="number"
-                  min={0}
-                  step={100}
                   value={initialDeposit}
-                  onChange={(e) => setInitialDeposit(e.target.value)}
+                  onValueChange={setInitialDeposit}
                   placeholder="0"
                 />
               </div>
@@ -320,7 +323,12 @@ export function CreateFurnitureOrderDialog({
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button type="submit" disabled={submitting} className="rounded-full">
+            <Button
+              type="button"
+              disabled={submitting}
+              className="rounded-full"
+              onClick={() => void submit()}
+            >
               {submitting ? "Creating…" : "Create order"}
             </Button>
           </div>

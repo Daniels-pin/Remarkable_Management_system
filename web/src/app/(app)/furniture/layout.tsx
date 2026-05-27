@@ -1,6 +1,7 @@
 "use client";
 
 import { RequireFurnitureRoute } from "@/components/auth/guards";
+import { FurnitureQuotationDraftRecoveryProvider } from "@/components/furniture/furniture-quotation-draft-recovery-provider";
 import { OperationalShell } from "@/components/layout/operational-shell";
 import { PageHeaderProvider } from "@/components/layout/page-header-context";
 
@@ -11,9 +12,11 @@ export default function FurnitureSectionLayout({
 }) {
   return (
     <RequireFurnitureRoute>
-      <PageHeaderProvider>
-        <OperationalShell>{children}</OperationalShell>
-      </PageHeaderProvider>
+      <FurnitureQuotationDraftRecoveryProvider>
+        <PageHeaderProvider>
+          <OperationalShell>{children}</OperationalShell>
+        </PageHeaderProvider>
+      </FurnitureQuotationDraftRecoveryProvider>
     </RequireFurnitureRoute>
   );
 }

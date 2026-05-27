@@ -8,6 +8,7 @@ from app.furniture.models.quotation import (
     FurnitureQuotation,
     FurnitureQuotationItem,
     FurnitureQuotationPaymentSettings,
+    FurnitureQuotationSection,
     FurnitureQuotationSequenceCounter,
 )
 from app.furniture.models.enums import FurnitureOrderStatus, FurnitureQuotationStatus
@@ -20,6 +21,7 @@ __all__ = [
     "FurnitureOrderStatus",
     "FurnitureQuotation",
     "FurnitureQuotationItem",
+    "FurnitureQuotationSection",
     "FurnitureQuotationPaymentSettings",
     "FurnitureQuotationSequenceCounter",
     "FurnitureQuotationStatus",

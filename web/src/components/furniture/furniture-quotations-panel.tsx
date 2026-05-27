@@ -33,10 +33,12 @@ import {
   downloadFurnitureQuotationPdf,
   finalizeFurnitureQuotation,
   getFurnitureQuotation,
+  getFurnitureQuotationActiveAutosave,
   listFurnitureQuotations,
   type FurnitureQuotation,
 } from "@/lib/api";
-import { emitFurnitureUpdated, subscribeFurnitureUpdated } from "@/lib/furniture-events";
+import { emitFurnitureUpdated, subscribeFurnitureResumeDraft, subscribeFurnitureUpdated } from "@/lib/furniture-events";
+import { consumeFurnitureQuotationResumeId } from "@/lib/furniture-quotation-draft";
 import { formatCatalogDate, formatNaira } from "@/lib/format";
 
 export function FurnitureQuotationsPanel() {
@@ -72,6 +74,22 @@ export function FurnitureQuotationsPanel() {
     queueMicrotask(() => void load());
     return subscribeFurnitureUpdated(() => void load());
   }, [load]);
+
+  const resumeDraft = React.useCallback(async (quotationId: string) => {
+    try {
+      const fresh = await getFurnitureQuotation(quotationId);
+      setEditQuotation(fresh);
+    } catch (err) {
+      const msg = err instanceof ApiError ? err.message : "Could not restore quotation draft.";
+      toast.error(msg);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    const resumeId = consumeFurnitureQuotationResumeId();
+    if (resumeId) void resumeDraft(resumeId);
+    return subscribeFurnitureResumeDraft((quotationId) => void resumeDraft(quotationId));
+  }, [resumeDraft]);
 
   const openView = async (quotation: FurnitureQuotation) => {
     try {
@@ -153,6 +171,21 @@ export function FurnitureQuotationsPanel() {
     await openView(quotation);
   };
 
+  const openCreate = async () => {
+    try {
+      const { draft } = await getFurnitureQuotationActiveAutosave();
+      if (draft) {
+        setEditQuotation(draft);
+        return;
+      }
+    } catch (err) {
+      const msg = err instanceof ApiError ? err.message : "Could not check for saved drafts.";
+      toast.error(msg);
+      return;
+    }
+    setCreateOpen(true);
+  };
+
   const renderActions = (quotation: FurnitureQuotation) => {
     const busy = actionId === quotation.id;
     const canEdit = quotation.status !== "converted";
@@ -225,7 +258,7 @@ export function FurnitureQuotationsPanel() {
           </Button>
           <Button
             className="rounded-full bg-[var(--foreground)] text-[var(--background)] hover:opacity-90"
-            onClick={() => setCreateOpen(true)}
+            onClick={() => void openCreate()}
           >
             <Plus className="mr-1.5 h-4 w-4" />
             Create quotation

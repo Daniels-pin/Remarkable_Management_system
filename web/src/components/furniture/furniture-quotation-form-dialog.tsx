@@ -1,6 +1,5 @@
 "use client";
 
-import { Plus, Trash2 } from "lucide-react";
 import * as React from "react";
 import { toast } from "sonner";
 
@@ -14,38 +13,51 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { FurnitureOperationalNumericInput } from "@/components/furniture/furniture-operational-numeric-input";
+import { FurnitureOperationalAmountInput } from "@/components/furniture/furniture-operational-amount-input";
+import { FurnitureOperationalPercentInput } from "@/components/furniture/furniture-operational-percent-input";
+import {
+  preventFurnitureFormEnterSubmit,
+  preventFurnitureFormNativeSubmit,
+} from "@/components/furniture/furniture-form-handlers";
+import { FurnitureQuotationSectionEditor } from "@/components/furniture/furniture-quotation-section-editor";
+import { useAuth } from "@/components/providers/auth-provider";
 import {
   ApiError,
+  autosaveFurnitureQuotation,
   createFurnitureQuotation,
   updateFurnitureQuotation,
-  type FurnitureOrderItemInput,
   type FurnitureQuotation,
 } from "@/lib/api";
 import { emitFurnitureUpdated } from "@/lib/furniture-events";
+import {
+  furnitureQuotationTaxPercentFromAmount,
+  furnitureQuotationTotals,
+} from "@/lib/furniture-quotation-calculations";
+import {
+  clearFurnitureQuotationDraft,
+  customerNameFromDraft,
+  customerPhoneFromDraft,
+  hasQuotationDraftContent,
+  sectionTitleFromDraft,
+  writeFurnitureQuotationDraft,
+} from "@/lib/furniture-quotation-draft";
+import {
+  buildQuotationSectionsAutosavePayload,
+  buildQuotationSectionsPayload,
+  emptyQuotationSectionRow,
+  quotationSectionsFromApi,
+  quotationSectionsSubtotal,
+  type FurnitureQuotationSectionRow,
+} from "@/lib/furniture-quotation-sections";
 import { formatNaira } from "@/lib/format";
 
-type ItemRow = FurnitureOrderItemInput & { key: string };
-
-function emptyItem(): ItemRow {
-  return {
-    key: crypto.randomUUID(),
-    name: "",
-    description: "",
-    quantity: 0,
-    unit_price: 0,
-  };
-}
-
-function lineTotal(row: ItemRow) {
-  const qty = Math.max(0, Number(row.quantity) || 0);
-  const price = Math.max(0, Number(row.unit_price) || 0);
-  return qty * price;
-}
+const AUTOSAVE_DEBOUNCE_MS = 800;
 
 function todayIsoDate() {
   return new Date().toISOString().slice(0, 10);
 }
+
+type AutosaveStatus = "idle" | "saving" | "saved" | "error";
 
 export function FurnitureQuotationFormDialog({
   open,
@@ -58,69 +70,162 @@ export function FurnitureQuotationFormDialog({
   quotation?: FurnitureQuotation | null;
   onSaved: () => void;
 }) {
+  const { session } = useAuth();
   const isEdit = Boolean(quotation);
+  const isAutosaveSession = Boolean(quotation?.is_autosave_session);
 
   const [customerName, setCustomerName] = React.useState("");
   const [customerAddress, setCustomerAddress] = React.useState("");
   const [customerPhone, setCustomerPhone] = React.useState("");
   const [dateIssued, setDateIssued] = React.useState(todayIsoDate());
   const [discount, setDiscount] = React.useState("");
-  const [tax, setTax] = React.useState("");
-  const [items, setItems] = React.useState<ItemRow[]>([emptyItem()]);
+  const [taxPercent, setTaxPercent] = React.useState("");
+  const [sections, setSections] = React.useState<FurnitureQuotationSectionRow[]>([
+    emptyQuotationSectionRow(),
+  ]);
   const [submitting, setSubmitting] = React.useState(false);
+  const [autosaveQuotationId, setAutosaveQuotationId] = React.useState<string | null>(null);
+  const [autosaveStatus, setAutosaveStatus] = React.useState<AutosaveStatus>("idle");
+  const hydratedRef = React.useRef(false);
+  const autosaveRequestRef = React.useRef(0);
 
   React.useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      hydratedRef.current = false;
+      setAutosaveStatus("idle");
+      return;
+    }
     if (quotation) {
-      setCustomerName(quotation.customer_name);
+      setCustomerName(customerNameFromDraft(quotation.customer_name, quotation.customer_phone));
       setCustomerAddress(quotation.customer_address ?? "");
-      setCustomerPhone(quotation.customer_phone);
+      setCustomerPhone(customerPhoneFromDraft(quotation.customer_name, quotation.customer_phone));
       setDateIssued(quotation.date_issued);
       setDiscount(quotation.discount > 0 ? String(quotation.discount) : "");
-      setTax(quotation.tax > 0 ? String(quotation.tax) : "");
-      setItems(
-        quotation.items.length > 0
-          ? quotation.items.map((item) => ({
-              key: item.id,
-              name: item.name,
-              description: item.description ?? "",
-              quantity: item.quantity,
-              unit_price: item.unit_price,
-            }))
-          : [emptyItem()],
+      setTaxPercent(furnitureQuotationTaxPercentFromAmount(quotation.subtotal, quotation.tax));
+      setSections(
+        quotationSectionsFromApi(quotation.sections).map((section) => ({
+          ...section,
+          title: sectionTitleFromDraft(section.title, Boolean(quotation.is_autosave_session)),
+        })),
       );
+      setAutosaveQuotationId(quotation.id);
     } else {
       setCustomerName("");
       setCustomerAddress("");
       setCustomerPhone("");
       setDateIssued(todayIsoDate());
       setDiscount("");
-      setTax("");
-      setItems([emptyItem()]);
+      setTaxPercent("");
+      setSections([emptyQuotationSectionRow()]);
+      setAutosaveQuotationId(null);
     }
     setSubmitting(false);
+    hydratedRef.current = true;
   }, [open, quotation]);
 
-  const subtotal = items.reduce((sum, row) => sum + lineTotal(row), 0);
-  const discountValue = discount.trim() ? Math.max(0, Number(discount) || 0) : 0;
-  const taxValue = tax.trim() ? Math.max(0, Number(tax) || 0) : 0;
-  const grandTotal = Math.max(0, subtotal - discountValue + taxValue);
-
-  const updateItem = (key: string, patch: Partial<ItemRow>) => {
-    setItems((rows) => rows.map((r) => (r.key === key ? { ...r, ...patch } : r)));
-  };
-
-  const removeItem = (key: string) => {
-    setItems((rows) => {
-      if (rows.length <= 1) return rows;
-      return rows.filter((r) => r.key !== key);
+  const subtotal = quotationSectionsSubtotal(sections);
+  const { discountValue, taxPercent: taxPercentValue, taxAmount, grandTotal } =
+    furnitureQuotationTotals({
+      subtotal,
+      discountInput: discount,
+      taxPercentInput: taxPercent,
     });
-  };
 
-  const addItem = () => setItems((rows) => [...rows, emptyItem()]);
+  const draftSnapshot = React.useMemo(
+    () => ({
+      customerName,
+      customerAddress,
+      customerPhone,
+      discount,
+      taxPercent,
+      sections,
+    }),
+    [customerAddress, customerName, customerPhone, discount, sections, taxPercent],
+  );
 
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const persistLocalDraft = React.useCallback(
+    (quotationId: string | null) => {
+      if (!session?.user_id) return;
+      writeFurnitureQuotationDraft({
+        userId: session.user_id,
+        quotationId,
+        savedAt: new Date().toISOString(),
+        customerName,
+        customerAddress,
+        customerPhone,
+        dateIssued,
+        discount,
+        taxPercent,
+        sections,
+      });
+    },
+    [
+      customerAddress,
+      customerName,
+      customerPhone,
+      dateIssued,
+      discount,
+      sections,
+      session?.user_id,
+      taxPercent,
+    ],
+  );
+
+  React.useEffect(() => {
+    if (!open || !hydratedRef.current || submitting || !session?.user_id) return;
+    if (!hasQuotationDraftContent(draftSnapshot)) return;
+
+    const requestId = autosaveRequestRef.current + 1;
+    autosaveRequestRef.current = requestId;
+
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        setAutosaveStatus("saving");
+        persistLocalDraft(autosaveQuotationId);
+
+        try {
+          const saved = await autosaveFurnitureQuotation({
+            quotation_id: autosaveQuotationId ?? quotation?.id ?? null,
+            customer_name: customerName.trim(),
+            customer_address: customerAddress.trim() || null,
+            customer_phone: customerPhone.trim(),
+            date_issued: dateIssued,
+            sections: buildQuotationSectionsAutosavePayload(sections),
+            discount: discountValue,
+            tax: taxAmount,
+          });
+
+          if (autosaveRequestRef.current !== requestId) return;
+
+          setAutosaveQuotationId(saved.id);
+          persistLocalDraft(saved.id);
+          setAutosaveStatus("saved");
+        } catch {
+          if (autosaveRequestRef.current !== requestId) return;
+          setAutosaveStatus("error");
+        }
+      })();
+    }, AUTOSAVE_DEBOUNCE_MS);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    autosaveQuotationId,
+    customerAddress,
+    customerName,
+    customerPhone,
+    dateIssued,
+    discountValue,
+    draftSnapshot,
+    open,
+    persistLocalDraft,
+    quotation?.id,
+    sections,
+    session?.user_id,
+    submitting,
+    taxAmount,
+  ]);
+
+  const submit = async () => {
     if (!customerName.trim()) {
       toast.error("Customer name is required.");
       return;
@@ -134,12 +239,13 @@ export function FurnitureQuotationFormDialog({
       return;
     }
 
-    const validItems = items.filter((row) => row.name.trim());
-    if (validItems.length === 0) {
-      toast.error("Add at least one quotation item.");
+    const payloadSections = buildQuotationSectionsPayload(sections);
+    if (payloadSections.length === 0) {
+      toast.error("Add at least one section subheading with a priced item.");
       return;
     }
 
+    const validItems = payloadSections.flatMap((section) => section.items);
     for (const row of validItems) {
       if (row.quantity <= 0) {
         toast.error("Quantity must be greater than zero.");
@@ -162,28 +268,27 @@ export function FurnitureQuotationFormDialog({
       customer_phone: customerPhone.trim(),
       date_issued: dateIssued,
       discount: discountValue,
-      tax: taxValue,
-      items: validItems.map(({ name, description, quantity, unit_price }) => ({
-        name: name.trim(),
-        description: description?.trim() || null,
-        quantity,
-        unit_price,
-      })),
+      tax: taxAmount,
+      sections: payloadSections,
     };
 
     setSubmitting(true);
     try {
-      if (isEdit && quotation) {
-        await updateFurnitureQuotation(quotation.id, payload);
+      const targetId = autosaveQuotationId ?? quotation?.id ?? null;
+      if (targetId) {
+        await updateFurnitureQuotation(targetId, payload);
         toast.success(
-          quotation.status === "finalized"
+          quotation?.status === "finalized"
             ? "Quotation updated and reverted to draft."
-            : "Quotation updated.",
+            : isAutosaveSession
+              ? "Quotation saved."
+              : "Quotation updated.",
         );
       } else {
         await createFurnitureQuotation(payload);
         toast.success("Quotation created.");
       }
+      clearFurnitureQuotationDraft();
       emitFurnitureUpdated();
       onOpenChange(false);
       onSaved();
@@ -195,13 +300,44 @@ export function FurnitureQuotationFormDialog({
     }
   };
 
+  const autosaveLabel =
+    autosaveStatus === "saving"
+      ? "Saving…"
+      : autosaveStatus === "saved"
+        ? "Draft saved"
+        : autosaveStatus === "error"
+          ? "Autosave failed"
+          : null;
+
+  const dialogTitle = isAutosaveSession
+    ? "Continue quotation draft"
+    : isEdit
+      ? "Edit quotation"
+      : "Create quotation";
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="w-[min(100%,42rem)] max-w-none">
         <DialogHeader>
-          <DialogTitle>{isEdit ? "Edit quotation" : "Create quotation"}</DialogTitle>
+          <div className="flex items-start justify-between gap-3">
+            <DialogTitle>{dialogTitle}</DialogTitle>
+            {autosaveLabel ? (
+              <span
+                className={`shrink-0 pt-1 text-xs ${
+                  autosaveStatus === "error"
+                    ? "text-red-600 dark:text-red-400"
+                    : "text-[var(--muted-foreground)]"
+                }`}
+              >
+                {autosaveLabel}
+              </span>
+            ) : null}
+          </div>
         </DialogHeader>
-        <form onSubmit={(e) => void submit(e)}>
+        <form
+          onSubmit={preventFurnitureFormNativeSubmit}
+          onKeyDown={preventFurnitureFormEnterSubmit}
+        >
           <DialogBody className="max-h-[min(70dvh,36rem)] space-y-8 overflow-y-auto">
             <section className="space-y-4">
               <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
@@ -251,89 +387,7 @@ export function FurnitureQuotationFormDialog({
               </div>
             </section>
 
-            <section className="space-y-4">
-              <div className="flex items-center justify-between gap-3">
-                <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
-                  Quotation items
-                </p>
-                <Button type="button" variant="outline" size="sm" className="rounded-full" onClick={addItem}>
-                  <Plus className="mr-1.5 h-3.5 w-3.5" />
-                  Add item
-                </Button>
-              </div>
-              <div className="space-y-3">
-                {items.map((row, index) => (
-                  <div
-                    key={row.key}
-                    className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--muted)]/20 p-4"
-                  >
-                    <div className="mb-3 flex items-center justify-between gap-2">
-                      <span className="text-xs font-medium text-[var(--muted-foreground)]">
-                        Item {index + 1}
-                      </span>
-                      {items.length > 1 ? (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8 text-[var(--muted-foreground)]"
-                          onClick={() => removeItem(row.key)}
-                          aria-label="Remove item"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      ) : null}
-                    </div>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <div className="space-y-2 sm:col-span-2">
-                        <Label>Item name</Label>
-                        <Input
-                          value={row.name}
-                          onChange={(e) => updateItem(row.key, { name: e.target.value })}
-                          placeholder="e.g. Custom dining table"
-                        />
-                      </div>
-                      <div className="space-y-2 sm:col-span-2">
-                        <Label>Description</Label>
-                        <Input
-                          value={row.description ?? ""}
-                          onChange={(e) => updateItem(row.key, { description: e.target.value })}
-                          placeholder="Materials, dimensions, finish…"
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <Label>Quantity</Label>
-                        <FurnitureOperationalNumericInput
-                          min={0}
-                          step={1}
-                          value={row.quantity}
-                          defaultValue={0}
-                          onValueChange={(quantity) => updateItem(row.key, { quantity })}
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <Label>Unit price</Label>
-                        <FurnitureOperationalNumericInput
-                          min={0}
-                          step={100}
-                          value={row.unit_price}
-                          defaultValue={0}
-                          onValueChange={(unit_price) => updateItem(row.key, { unit_price })}
-                        />
-                      </div>
-                      <div className="sm:col-span-2">
-                        <p className="text-xs text-[var(--muted-foreground)]">
-                          Line total:{" "}
-                          <span className="font-medium text-[var(--foreground)]">
-                            {formatNaira(lineTotal(row))}
-                          </span>
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </section>
+            <FurnitureQuotationSectionEditor sections={sections} onChange={setSections} />
 
             <section className="space-y-4">
               <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
@@ -347,29 +401,31 @@ export function FurnitureQuotationFormDialog({
                 <div className="mt-3 grid gap-3 sm:grid-cols-2">
                   <div className="space-y-2">
                     <Label htmlFor="quote-discount">Discount (optional)</Label>
-                    <Input
+                    <FurnitureOperationalAmountInput
                       id="quote-discount"
-                      type="number"
-                      min={0}
-                      step={100}
                       value={discount}
-                      onChange={(e) => setDiscount(e.target.value)}
+                      onValueChange={setDiscount}
                       placeholder="0"
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="quote-tax">Tax (optional)</Label>
-                    <Input
+                    <Label htmlFor="quote-tax">Tax rate (optional)</Label>
+                    <FurnitureOperationalPercentInput
                       id="quote-tax"
-                      type="number"
-                      min={0}
-                      step={100}
-                      value={tax}
-                      onChange={(e) => setTax(e.target.value)}
+                      value={taxPercent}
+                      onValueChange={setTaxPercent}
                       placeholder="0"
                     />
                   </div>
                 </div>
+                {taxAmount > 0 ? (
+                  <div className="mt-2 flex items-center justify-between text-sm">
+                    <span className="text-[var(--muted-foreground)]">
+                      Tax ({taxPercentValue}%)
+                    </span>
+                    <span className="font-medium">{formatNaira(taxAmount)}</span>
+                  </div>
+                ) : null}
                 <div className="mt-3 flex items-center justify-between border-t border-[var(--border)] pt-3">
                   <span className="font-medium">Grand total</span>
                   <span className="font-[family-name:var(--font-serif)] text-xl font-semibold">
@@ -383,8 +439,13 @@ export function FurnitureQuotationFormDialog({
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button type="submit" disabled={submitting} className="rounded-full">
-              {submitting ? "Saving…" : isEdit ? "Save changes" : "Create quotation"}
+            <Button
+              type="button"
+              disabled={submitting}
+              className="rounded-full"
+              onClick={() => void submit()}
+            >
+              {submitting ? "Saving…" : isEdit || autosaveQuotationId ? "Save changes" : "Create quotation"}
             </Button>
           </div>
         </form>

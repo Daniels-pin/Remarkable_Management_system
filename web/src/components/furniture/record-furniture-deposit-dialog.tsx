@@ -11,6 +11,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { FurnitureOperationalAmountInput } from "@/components/furniture/furniture-operational-amount-input";
+import {
+  preventFurnitureFormEnterSubmit,
+  preventFurnitureFormNativeSubmit,
+} from "@/components/furniture/furniture-form-handlers";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ApiError, recordFurnitureOrderDeposit, type FurnitureOrder } from "@/lib/api";
@@ -39,8 +44,7 @@ export function RecordFurnitureDepositDialog({
     setSubmitting(false);
   }, [open]);
 
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const submit = async () => {
     if (!order) return;
     const value = Number(amount);
     if (!value || value <= 0) {
@@ -72,7 +76,10 @@ export function RecordFurnitureDepositDialog({
           <DialogTitle>Record deposit</DialogTitle>
         </DialogHeader>
         {order ? (
-          <form onSubmit={(e) => void submit(e)}>
+          <form
+            onSubmit={preventFurnitureFormNativeSubmit}
+            onKeyDown={preventFurnitureFormEnterSubmit}
+          >
             <DialogBody className="space-y-4">
               <p className="text-sm text-[var(--muted-foreground)]">
                 Order {order.order_number} · Outstanding{" "}
@@ -82,13 +89,10 @@ export function RecordFurnitureDepositDialog({
               </p>
               <div className="space-y-2">
                 <Label htmlFor="deposit-amount">Amount</Label>
-                <Input
+                <FurnitureOperationalAmountInput
                   id="deposit-amount"
-                  type="number"
-                  min={0}
-                  step={100}
                   value={amount}
-                  onChange={(e) => setAmount(e.target.value)}
+                  onValueChange={setAmount}
                   required
                 />
               </div>
@@ -106,7 +110,12 @@ export function RecordFurnitureDepositDialog({
               <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
                 Cancel
               </Button>
-              <Button type="submit" disabled={submitting} className="rounded-full">
+              <Button
+                type="button"
+                disabled={submitting}
+                className="rounded-full"
+                onClick={() => void submit()}
+              >
                 {submitting ? "Saving…" : "Record deposit"}
               </Button>
             </div>

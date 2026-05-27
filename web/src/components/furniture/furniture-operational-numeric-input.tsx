@@ -4,17 +4,35 @@ import * as React from "react";
 
 import { Input, type InputProps } from "@/components/ui/input";
 
-type FurnitureOperationalNumericInputProps = Omit<InputProps, "type" | "value" | "onChange"> & {
+type FurnitureOperationalNumericInputProps = Omit<
+  InputProps,
+  "type" | "value" | "onChange" | "step" | "min" | "max"
+> & {
   value: number;
   defaultValue: number;
   onValueChange: (value: number) => void;
+  integerOnly?: boolean;
 };
 
-function parseNumericInput(raw: string) {
+function sanitizeNumericDraft(raw: string, integerOnly: boolean) {
+  if (integerOnly) {
+    return raw.replace(/\D/g, "");
+  }
+
+  let cleaned = raw.replace(/[^\d.]/g, "");
+  const parts = cleaned.split(".");
+  if (parts.length > 2) {
+    cleaned = `${parts[0]}.${parts.slice(1).join("")}`;
+  }
+  return cleaned;
+}
+
+function parseNumericInput(raw: string, integerOnly: boolean) {
   if (raw.trim() === "") {
     return null;
   }
-  const parsed = Number(raw);
+
+  const parsed = integerOnly ? Number.parseInt(raw, 10) : Number.parseFloat(raw);
   return Number.isFinite(parsed) ? parsed : null;
 }
 
@@ -33,6 +51,7 @@ export function FurnitureOperationalNumericInput({
   value,
   defaultValue,
   onValueChange,
+  integerOnly = false,
   min,
   onFocus,
   onBlur,
@@ -49,14 +68,14 @@ export function FurnitureOperationalNumericInput({
 
   const commitValue = React.useCallback(
     (raw: string) => {
-      const parsed = parseNumericInput(raw);
+      const parsed = parseNumericInput(raw, integerOnly);
       if (parsed === null) {
         onValueChange(defaultValue);
         return;
       }
       onValueChange(clampValue(parsed, min));
     },
-    [defaultValue, min, onValueChange],
+    [defaultValue, integerOnly, min, onValueChange],
   );
 
   const handleFocus = (event: React.FocusEvent<HTMLInputElement>) => {
@@ -70,10 +89,10 @@ export function FurnitureOperationalNumericInput({
   };
 
   const handleChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const next = event.target.value;
+    const next = sanitizeNumericDraft(event.target.value, integerOnly);
     setDraft(next);
 
-    const parsed = parseNumericInput(next);
+    const parsed = parseNumericInput(next, integerOnly);
     if (parsed !== null) {
       onValueChange(clampValue(parsed, min));
     } else if (next.trim() === "") {
@@ -90,8 +109,9 @@ export function FurnitureOperationalNumericInput({
   return (
     <Input
       {...props}
-      type="number"
-      min={min}
+      type="text"
+      inputMode={integerOnly ? "numeric" : "decimal"}
+      autoComplete="off"
       value={displayValue}
       onFocus={handleFocus}
       onChange={handleChange}
