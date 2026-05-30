@@ -5,7 +5,7 @@ FastAPI backend skeleton for internal operations (Barbershop module + Furniture 
 ## Setup
 
 1. Create a PostgreSQL database and copy `.env.example` to `.env`.
-2. Install: `pip install -e ".[dev]"` (from this directory).
+2. From this directory, run `pip install -e ".[dev]"`.
 3. Run migrations: `alembic upgrade head`.
 4. Run the app: `uvicorn app.main:app --reload --host 0.0.0.0 --port 8000`.
 

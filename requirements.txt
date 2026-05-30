@@ -1,32 +1,17 @@
-# Production dependencies for Remarkable API (Python >= 3.11).
-# Render build: pip install -r requirements.txt && alembic upgrade head
-# Render start: uvicorn app.main:app --host 0.0.0.0 --port $PORT
-
-# --- Web framework & ASGI server ---
 fastapi==0.136.3
 starlette==1.2.0
 uvicorn[standard]==0.48.0
 python-multipart==0.0.29
-
-# --- Data & migrations ---
 SQLAlchemy==2.0.50
 psycopg2-binary==2.9.12
 alembic==1.18.4
-
-# --- Config & validation ---
 pydantic==2.13.4
 pydantic-settings==2.14.1
 pydantic_core==2.46.4
 python-dotenv==1.2.2
-
-# --- Auth ---
 bcrypt==5.0.0
-
-# --- PDF generation (furniture quotations) ---
 reportlab==4.5.1
 pillow==12.2.0
-
-# --- Transitive / runtime (pinned for reproducible deploys) ---
 annotated-doc==0.0.4
 annotated-types==0.7.0
 anyio==4.13.0
