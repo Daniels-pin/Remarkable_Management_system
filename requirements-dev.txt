@@ -1,0 +1,9 @@
+# Local development & testing (install after requirements.txt).
+# pip install -r requirements.txt -r requirements-dev.txt
+
+-r requirements.txt
+
+httpx==0.28.1
+httpcore==1.0.9
+certifi==2026.4.22
+ruff==0.15.12
