@@ -1,7 +1,6 @@
 # Production dependencies for Remarkable API (Python >= 3.11).
-# Install: pip install -r requirements.txt
-# Run app: uvicorn app.main:app --host 0.0.0.0 --port 8000
-# Migrations: alembic upgrade head
+# Render build: pip install -r requirements.txt && alembic upgrade head
+# Render start: uvicorn app.main:app --host 0.0.0.0 --port $PORT
 
 # --- Web framework & ASGI server ---
 fastapi==0.136.3
