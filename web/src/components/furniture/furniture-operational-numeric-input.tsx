@@ -12,6 +12,7 @@ type FurnitureOperationalNumericInputProps = Omit<
   defaultValue: number;
   onValueChange: (value: number) => void;
   integerOnly?: boolean;
+  min?: number | string;
 };
 
 function sanitizeNumericDraft(raw: string, integerOnly: boolean) {

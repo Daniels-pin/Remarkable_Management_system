@@ -27,7 +27,7 @@ export function normalizePayoutBreakdown(input: {
     expectedPayout: input.expectedPayout,
     actualPayout,
     attendanceDeductionsTotal: input.attendanceDeductionsTotal,
-    lateDeductionsTotal: input.lateDeductionsTotal,
-    absenceDeductionsTotal: input.absenceDeductionsTotal,
+    lateDeductionsTotal: input.lateDeductionsTotal ?? 0,
+    absenceDeductionsTotal: input.absenceDeductionsTotal ?? 0,
   };
 }

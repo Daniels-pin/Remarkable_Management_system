@@ -4,6 +4,7 @@ from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
 from app.auth.rbac import assert_no_nested_impersonation, require_admin
+from app.auth.session_cookies import set_session_cookie
 from app.auth.session_tokens import create_user_session, revoke_session_by_raw_token
 from app.core.config import settings
 from app.core.deps import ActorContext, get_actor_context, get_db
@@ -251,14 +252,7 @@ def impersonate_user(
     )
     db.commit()
 
-    response.set_cookie(
-        key=settings.session_cookie_name,
-        value=raw,
-        httponly=True,
-        secure=not settings.debug,
-        samesite="lax",
-        max_age=settings.session_idle_minutes * 60,
-    )
+    set_session_cookie(response, value=raw, settings=settings)
 
     return build_session_info_response(target, session_row, admin_user)
 
@@ -306,14 +300,7 @@ def stop_impersonation(
     )
     db.commit()
 
-    response.set_cookie(
-        key=settings.session_cookie_name,
-        value=raw,
-        httponly=True,
-        secure=not settings.debug,
-        samesite="lax",
-        max_age=settings.session_idle_minutes * 60,
-    )
+    set_session_cookie(response, value=raw, settings=settings)
     return build_session_info_response(admin_user, session_row, None)
 
 

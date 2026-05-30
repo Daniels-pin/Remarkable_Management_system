@@ -4,7 +4,7 @@ import { AlertTriangle, Bell, CheckCircle2 } from "lucide-react";
 import Link from "next/link";
 
 import { useOpsNotifications } from "@/components/ops/ops-notifications-context";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { NotificationKind } from "@/lib/ops-types";
 
@@ -79,15 +79,15 @@ export function NotificationsCenter() {
               Clear
             </Button>
             {n.relatedTransactionId ? (
-              <Button
-                asChild
-                type="button"
-                size="sm"
-                variant="outline"
-                className="shrink-0 self-start rounded-full border-dashed text-xs"
+              <Link
+                href="/barbershop/reconciliation"
+                className={cn(
+                  buttonVariants({ size: "sm", variant: "outline" }),
+                  "shrink-0 self-start rounded-full border-dashed text-xs",
+                )}
               >
-                <Link href="/barbershop/reconciliation">Open</Link>
-              </Button>
+                Open
+              </Link>
             ) : null}
           </li>
         );
