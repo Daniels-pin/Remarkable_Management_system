@@ -10,7 +10,7 @@ class AttendanceSettingsUpdate(BaseModel):
     latitude: Decimal = Field(..., ge=-90, le=90)
     longitude: Decimal = Field(..., ge=-180, le=180)
     location_label: str = Field(..., min_length=1, max_length=512)
-    radius_meters: int = Field(..., ge=25, le=500)
+    radius_meters: int = Field(..., ge=10, le=1000)
     late_time: time
     late_deduction_amount: Decimal = Field(..., ge=0)
     absence_deduction_amount: Decimal = Field(..., ge=0)

@@ -10,7 +10,44 @@ export const WEEKDAY_FULL = [
   "Sunday",
 ] as const;
 
-export const RADIUS_PRESETS = [50, 75, 100, 150] as const;
+export const RADIUS_MIN_METERS = 10;
+export const RADIUS_MAX_METERS = 1000;
+
+/** Quick-select chips; autofill the radius input only (not stored as labels). */
+export const RADIUS_QUICK_PRESETS = [50, 75, 100, 150] as const;
+
+/** @deprecated Use RADIUS_QUICK_PRESETS */
+export const RADIUS_PRESETS = RADIUS_QUICK_PRESETS;
+
+export function sanitizeRadiusInput(raw: string): string {
+  return raw.replace(/\D/g, "");
+}
+
+export function parseRadiusMeters(raw: string): number | null {
+  const digits = sanitizeRadiusInput(raw);
+  if (!digits) return null;
+  const value = Number.parseInt(digits, 10);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  return value;
+}
+
+export function previewRadiusMeters(raw: string, fallback: number): number {
+  const parsed = parseRadiusMeters(raw);
+  return parsed ?? fallback;
+}
+
+export function validateRadiusMeters(value: number): string | null {
+  if (!Number.isInteger(value) || value <= 0) {
+    return "Enter a whole number of meters.";
+  }
+  if (value < RADIUS_MIN_METERS) {
+    return `Minimum radius is ${RADIUS_MIN_METERS} meters.`;
+  }
+  if (value > RADIUS_MAX_METERS) {
+    return `Maximum radius is ${RADIUS_MAX_METERS} meters.`;
+  }
+  return null;
+}
 
 export function attendanceStatusLabel(status: string | null | undefined): string {
   const normalized = (status ?? "").toLowerCase();

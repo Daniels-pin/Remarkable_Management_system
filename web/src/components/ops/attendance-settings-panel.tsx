@@ -15,7 +15,15 @@ import {
   updateAttendanceSettings,
   type AttendanceSettingsRow,
 } from "@/lib/api";
-import { formatLateTime, RADIUS_PRESETS } from "@/lib/attendance";
+import {
+  formatLateTime,
+  previewRadiusMeters,
+  RADIUS_MAX_METERS,
+  RADIUS_MIN_METERS,
+  RADIUS_QUICK_PRESETS,
+  sanitizeRadiusInput,
+  validateRadiusMeters,
+} from "@/lib/attendance";
 import { formatNaira } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -57,6 +65,8 @@ export function AttendanceSettingsPanel() {
   const [searching, setSearching] = React.useState(false);
   const [searchQuery, setSearchQuery] = React.useState("");
   const [canEdit, setCanEdit] = React.useState(false);
+  const [radiusInput, setRadiusInput] = React.useState("100");
+  const [radiusError, setRadiusError] = React.useState<string | null>(null);
   const [form, setForm] = React.useState({
     latitude: 6.5244,
     longitude: 3.3792,
@@ -67,12 +77,17 @@ export function AttendanceSettingsPanel() {
     absence_deduction_amount: "2000",
   });
 
+  const mapRadiusMeters = previewRadiusMeters(radiusInput, form.radius_meters);
+  const displayRadiusMeters = mapRadiusMeters;
+
   const load = React.useCallback(async () => {
     setLoading(true);
     try {
       const res = await getAttendanceSettings();
       const s = res.settings;
       setCanEdit(Boolean(s.can_edit));
+      setRadiusInput(String(s.radius_meters));
+      setRadiusError(null);
       setForm({
         latitude: Number(s.latitude),
         longitude: Number(s.longitude),
@@ -116,14 +131,34 @@ export function AttendanceSettingsPanel() {
     }
   };
 
+  const applyRadiusInput = (raw: string) => {
+    const digits = sanitizeRadiusInput(raw);
+    setRadiusInput(digits);
+    const parsed = digits ? Number.parseInt(digits, 10) : null;
+    if (parsed != null && parsed > 0) {
+      setForm((f) => ({ ...f, radius_meters: parsed }));
+      setRadiusError(validateRadiusMeters(parsed));
+    } else {
+      setRadiusError("Enter a whole number of meters.");
+    }
+  };
+
   const save = async () => {
+    const parsed = previewRadiusMeters(radiusInput, form.radius_meters);
+    const radiusValidation = validateRadiusMeters(parsed);
+    if (radiusValidation) {
+      setRadiusError(radiusValidation);
+      toast.error(radiusValidation);
+      return;
+    }
+
     setSaving(true);
     try {
       await updateAttendanceSettings({
         latitude: form.latitude,
         longitude: form.longitude,
         location_label: form.location_label.trim(),
-        radius_meters: form.radius_meters,
+        radius_meters: parsed,
         late_time: form.late_time,
         late_deduction_amount: Number(form.late_deduction_amount),
         absence_deduction_amount: Number(form.absence_deduction_amount),
@@ -191,7 +226,7 @@ export function AttendanceSettingsPanel() {
             latitude={form.latitude}
             longitude={form.longitude}
             locationLabel={form.location_label}
-            radiusMeters={form.radius_meters}
+            radiusMeters={mapRadiusMeters}
             readOnly={!canEdit}
             onChange={(v) =>
               setForm((f) => ({
@@ -235,29 +270,58 @@ export function AttendanceSettingsPanel() {
             </div>
           </div>
 
-          <div className="space-y-2">
-            <Label>Attendance radius</Label>
-            <div className="flex flex-wrap gap-1.5">
-              {RADIUS_PRESETS.map((r) => (
+          <div className="space-y-3">
+            <div>
+              <p className="text-sm font-medium text-[var(--foreground)]">Attendance radius</p>
+              <p className="mt-0.5 text-sm text-[var(--muted-foreground)]">
+                <span className="font-medium text-[var(--foreground)]">
+                  {displayRadiusMeters} meters
+                </span>
+              </p>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="radius-meters">Radius (meters)</Label>
+              <Input
+                aria-invalid={radiusError != null}
+                className="max-w-[12rem]"
+                disabled={!canEdit}
+                id="radius-meters"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                placeholder="e.g. 125"
+                value={radiusInput}
+                onChange={(e) => applyRadiusInput(e.target.value)}
+              />
+              {radiusError ? (
+                <p className="text-xs text-rose-600 dark:text-rose-400">{radiusError}</p>
+              ) : (
+                <p className="text-xs text-[var(--muted-foreground)]">
+                  {RADIUS_MIN_METERS}–{RADIUS_MAX_METERS} meters
+                </p>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-xs text-[var(--muted-foreground)]">Quick select</span>
+              {RADIUS_QUICK_PRESETS.map((r) => (
                 <Button
                   key={r}
                   disabled={!canEdit}
                   size="sm"
                   type="button"
-                  variant={form.radius_meters === r ? "default" : "outline"}
+                  variant="outline"
                   className={cn(
                     "rounded-full",
-                    form.radius_meters === r &&
+                    radiusInput === String(r) &&
                       "border-transparent bg-[var(--foreground)] text-[var(--background)]",
                   )}
-                  onClick={() => setForm((f) => ({ ...f, radius_meters: r }))}
+                  onClick={() => applyRadiusInput(String(r))}
                 >
                   {r}m
                 </Button>
               ))}
             </div>
             <p className="text-xs text-[var(--muted-foreground)]">
-              Employees must sign in within {form.radius_meters} meters of the shop pin.
+              Employees must sign in within {displayRadiusMeters} meters of the shop pin.
             </p>
           </div>
         </CardContent>
