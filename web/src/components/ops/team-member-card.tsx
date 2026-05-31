@@ -8,6 +8,10 @@ import { TeamPosturePill } from "@/components/ops/team-posture-pill";
 import type { DirectoryTeamRow, ReconciliationPosture } from "@/lib/api";
 import { formatNaira, formatServicesCount } from "@/lib/format";
 import { resolveActualPayout } from "@/lib/payout";
+import {
+  type OperationalTeamRole,
+  teamRoleLabel,
+} from "@/lib/team-roles";
 import { cn } from "@/lib/utils";
 
 export type TeamMemberCardData = {
@@ -15,7 +19,7 @@ export type TeamMemberCardData = {
   displayName: string;
   initials: string;
   email: string;
-  role: "barber" | "staff";
+  role: OperationalTeamRole;
   monthRevenue: number;
   servicesCount: number;
   expectedPayout: number;
@@ -62,10 +66,22 @@ export function teamRowToCard(row: DirectoryTeamRow): TeamMemberCardData {
 }
 
 function payoutLabel(member: TeamMemberCardData) {
+  if (member.role === "manager") return "Compensation";
   if (member.role === "staff" && member.salaryType.includes("fixed")) {
     return "Salary";
   }
   return member.role === "barber" ? "Commission" : "Payout";
+}
+
+function roleBadgeClass(role: OperationalTeamRole) {
+  switch (role) {
+    case "manager":
+      return "border-violet-500/25 bg-violet-500/10 text-violet-950 dark:text-violet-100";
+    case "barber":
+      return "border-[var(--border)] bg-[var(--muted)] text-[var(--muted-foreground)]";
+    case "staff":
+      return "border-sky-500/20 bg-sky-500/8 text-sky-900 dark:text-sky-200";
+  }
 }
 
 export function TeamMemberCard({
@@ -94,12 +110,10 @@ export function TeamMemberCard({
                 <span
                   className={cn(
                     "rounded-full border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider",
-                    member.role === "barber"
-                      ? "border-[var(--border)] bg-[var(--muted)] text-[var(--muted-foreground)]"
-                      : "border-sky-500/20 bg-sky-500/8 text-sky-900 dark:text-sky-200",
+                    roleBadgeClass(member.role),
                   )}
                 >
-                  {member.role === "barber" ? "Barber" : "Staff"}
+                  {teamRoleLabel(member.role)}
                 </span>
               </div>
               <p className="mt-0.5 truncate text-xs text-[var(--muted-foreground)]">{member.email}</p>
@@ -147,19 +161,21 @@ export function TeamMemberCard({
                 )}
               </div>
             ) : null}
-            <div
-              className={cn(
-                "flex flex-col justify-end",
-                hidePayroll && "sm:col-start-2",
-              )}
-            >
-              <p className="text-[10px] font-medium uppercase tracking-wider text-[var(--muted-foreground)]">
-                Reconciliation
-              </p>
-              <div className="mt-1.5">
-                <TeamPosturePill posture={member.reconciliationPosture} />
+            {member.role !== "manager" ? (
+              <div
+                className={cn(
+                  "flex flex-col justify-end",
+                  hidePayroll && "sm:col-start-2",
+                )}
+              >
+                <p className="text-[10px] font-medium uppercase tracking-wider text-[var(--muted-foreground)]">
+                  Reconciliation
+                </p>
+                <div className="mt-1.5">
+                  <TeamPosturePill posture={member.reconciliationPosture} />
+                </div>
               </div>
-            </div>
+            ) : null}
           </div>
         </CardContent>
       </Card>

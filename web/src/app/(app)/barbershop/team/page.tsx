@@ -13,14 +13,27 @@ import { ApiError, listDirectoryTeam } from "@/lib/api";
 import { canAccessBarbershopUsers } from "@/lib/barbershop-access";
 import { isAdmin } from "@/lib/roles";
 import { subscribePayoutUpdated } from "@/lib/payout-events";
+import {
+  OPERATIONAL_TEAM_ROLES,
+  type OperationalTeamRole,
+  teamRoleLabel,
+} from "@/lib/team-roles";
 import { cn } from "@/lib/utils";
 
-type TeamFilter = "all" | "barber" | "staff";
+type TeamFilter = "all" | OperationalTeamRole;
 
 const FILTERS: { id: TeamFilter; label: string }[] = [
   { id: "all", label: "All team" },
-  { id: "barber", label: "Barbers" },
-  { id: "staff", label: "Staff" },
+  ...OPERATIONAL_TEAM_ROLES.map((role) => ({
+    id: role as TeamFilter,
+    label: `${teamRoleLabel(role)}s`,
+  })),
+];
+
+const ROLE_SECTIONS: { role: OperationalTeamRole; label: string }[] = [
+  { role: "manager", label: "Managers" },
+  { role: "barber", label: "Barbers" },
+  { role: "staff", label: "Staff" },
 ];
 
 export default function TeamPage() {
@@ -59,7 +72,7 @@ export default function TeamPage() {
   return (
     <BarbershopShell
       title="Team"
-      subtitle="Workforce performance — barbers and staff in one operational workspace."
+      subtitle="Complete workforce directory — managers, barbers, and staff in one operational workspace."
     >
       <div className="space-y-6">
         <div className="flex flex-wrap gap-1.5">
@@ -92,8 +105,8 @@ export default function TeamPage() {
               No team members added yet
             </p>
             <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-[var(--muted-foreground)]">
-              Add barbers and staff to track revenue, services, payouts, and reconciliation from a
-              single roster.
+              Add managers, barbers, and staff to track attendance, revenue, services, payouts, and
+              reconciliation from a single roster.
             </p>
             {canCreateUser ? (
               <Link
@@ -108,6 +121,29 @@ export default function TeamPage() {
                 Ask an administrator to provision new accounts.
               </p>
             )}
+          </div>
+        ) : filter === "all" ? (
+          <div className="space-y-10">
+            {ROLE_SECTIONS.map(({ role, label }) => {
+              const members = filtered.filter((m) => m.role === role);
+              if (members.length === 0) return null;
+              return (
+                <section key={role} className="space-y-4">
+                  <h2 className="font-[family-name:var(--font-serif)] text-lg font-semibold text-[var(--foreground)]">
+                    {label}
+                  </h2>
+                  <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                    {members.map((member) => (
+                      <TeamMemberCard
+                        key={member.id}
+                        member={member}
+                        hidePayroll={!adminView}
+                      />
+                    ))}
+                  </div>
+                </section>
+              );
+            })}
           </div>
         ) : (
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">

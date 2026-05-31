@@ -8,12 +8,13 @@ import {
 import { TeamPosturePill } from "@/components/ops/team-posture-pill";
 import { formatNaira, formatServicesCount } from "@/lib/format";
 import type { ReconciliationPosture } from "@/lib/api";
+import { type OperationalTeamRole, teamRoleLabel } from "@/lib/team-roles";
 import { cn } from "@/lib/utils";
 
 export type ManagerTeamMemberSummaryProps = {
   displayName: string;
   initials: string;
-  role: "barber" | "staff";
+  role: OperationalTeamRole;
   email: string;
   phone: string;
   monthRevenue: number;
@@ -47,7 +48,7 @@ export function ManagerTeamMemberSummary({
                   {displayName}
                 </h2>
                 <span className="rounded-full border border-[var(--border)] bg-[var(--muted)] px-2.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-[var(--muted-foreground)]">
-                  {role === "barber" ? "Barber" : "Staff"}
+                  {teamRoleLabel(role)}
                 </span>
               </div>
               <p className="mt-1 text-sm text-[var(--muted-foreground)]">
@@ -55,31 +56,42 @@ export function ManagerTeamMemberSummary({
                 {phone && phone !== "—" ? ` · ${phone}` : null}
               </p>
             </div>
-            <div className="text-right">
-              <p className="text-[10px] font-medium uppercase tracking-wider text-[var(--muted-foreground)]">
-                Reconciliation
-              </p>
-              <div className="mt-1.5 flex justify-end">
-                <TeamPosturePill posture={reconciliationPosture} />
+            {role !== "manager" ? (
+              <div className="text-right">
+                <p className="text-[10px] font-medium uppercase tracking-wider text-[var(--muted-foreground)]">
+                  Reconciliation
+                </p>
+                <div className="mt-1.5 flex justify-end">
+                  <TeamPosturePill posture={reconciliationPosture} />
+                </div>
               </div>
-            </div>
+            ) : null}
           </div>
 
-          <div className="grid gap-4 border-t border-[var(--border)]/80 pt-5 sm:grid-cols-2">
-            <Stat label="This month revenue" value={formatNaira(monthRevenue)} />
-            <Stat
-              label="Services this month"
-              value={formatServicesCount(monthServices)}
-              muted
-            />
-          </div>
+          {role !== "manager" ? (
+            <>
+              <div className="grid gap-4 border-t border-[var(--border)]/80 pt-5 sm:grid-cols-2">
+                <Stat label="This month revenue" value={formatNaira(monthRevenue)} />
+                <Stat
+                  label="Services this month"
+                  value={formatServicesCount(monthServices)}
+                  muted
+                />
+              </div>
 
-          <div className="space-y-3 border-t border-[var(--border)]/80 pt-5">
-            <p className="text-[11px] font-medium uppercase tracking-[0.12em] text-[var(--muted-foreground)]">
-              Financial summary
+              <div className="space-y-3 border-t border-[var(--border)]/80 pt-5">
+                <p className="text-[11px] font-medium uppercase tracking-[0.12em] text-[var(--muted-foreground)]">
+                  Financial summary
+                </p>
+                <MonthPostureSummary data={monthPosture} />
+              </div>
+            </>
+          ) : (
+            <p className="border-t border-[var(--border)]/80 pt-5 text-sm text-[var(--muted-foreground)]">
+              Management account — attendance and profile details below. Service reconciliation
+              applies to barbers and staff.
             </p>
-            <MonthPostureSummary data={monthPosture} />
-          </div>
+          )}
         </div>
       </div>
     </div>

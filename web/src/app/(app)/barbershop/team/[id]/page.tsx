@@ -216,15 +216,17 @@ function ManagerTeamMemberBody({
         monthPosture={profile.monthPosture}
       />
 
-      <OperationalHistorySection
-        mode="team"
-        memberId={memberId}
-        memberName={profile.displayName}
-        primarySide="manager"
-        employeeColumnLabel="Employee record"
-        managerColumnLabel="Manager record"
-        className="border-t border-[var(--border)]/60 pt-12"
-      />
+      {profile.role !== "manager" ? (
+        <OperationalHistorySection
+          mode="team"
+          memberId={memberId}
+          memberName={profile.displayName}
+          primarySide="manager"
+          employeeColumnLabel="Employee record"
+          managerColumnLabel="Manager record"
+          className="border-t border-[var(--border)]/60 pt-12"
+        />
+      ) : null}
 
       <AttendanceHistoryPanel managementMode showSummary title="Attendance" userId={memberId} />
     </div>
@@ -277,7 +279,7 @@ function AdminTeamMemberBody({
         variant="full"
         monthPayoutBreakdown={profile.monthPayoutBreakdown}
       />
-      <OperationalPostureSection profile={profile} />
+      {profile.role !== "manager" ? <OperationalPostureSection profile={profile} /> : null}
 
       <AttendanceOffDaysEditor
         attendanceStartDate={attendanceStartDate}
@@ -316,15 +318,17 @@ function AdminTeamMemberBody({
         </section>
       )}
 
-      <OperationalHistorySection
-        mode="team"
-        memberId={memberId}
-        memberName={profile.displayName}
-        primarySide="manager"
-        employeeColumnLabel="Employee record"
-        managerColumnLabel="Manager record"
-        className="border-t border-[var(--border)]/60 pt-12"
-      />
+      {profile.role !== "manager" ? (
+        <OperationalHistorySection
+          mode="team"
+          memberId={memberId}
+          memberName={profile.displayName}
+          primarySide="manager"
+          employeeColumnLabel="Employee record"
+          managerColumnLabel="Manager record"
+          className="border-t border-[var(--border)]/60 pt-12"
+        />
+      ) : null}
     </div>
   );
 }

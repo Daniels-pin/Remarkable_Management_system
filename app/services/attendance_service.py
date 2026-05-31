@@ -8,7 +8,7 @@ from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from math import asin, cos, radians, sin, sqrt
 
-from sqlalchemy import func
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.exceptions import ConflictError, ForbiddenError, NotFoundError, ValidationAppError
@@ -19,7 +19,13 @@ from app.services.business_time import business_date_for_instant, shop_tz
 
 _ZERO = Decimal("0")
 _EARTH_RADIUS_M = 6_371_000
-_ATTENDANCE_ROLES = (UserRole.BARBER, UserRole.STAFF, UserRole.MANAGER)
+_ATTENDANCE_ROLES = (UserRole.MANAGER, UserRole.BARBER, UserRole.STAFF)
+_ATTENDANCE_ROLE_ORDER = case(
+    (User.role == UserRole.MANAGER, 0),
+    (User.role == UserRole.BARBER, 1),
+    (User.role == UserRole.STAFF, 2),
+    else_=3,
+)
 _SUNDAY = 6
 
 
@@ -608,6 +614,6 @@ def list_attendance_roster(db: Session) -> list[User]:
             User.role.in_(_ATTENDANCE_ROLES),
             User.account_status == AccountStatus.ACTIVE,
         )
-        .order_by(User.role.asc(), User.username.asc())
+        .order_by(_ATTENDANCE_ROLE_ORDER.asc(), User.username.asc())
         .all()
     )

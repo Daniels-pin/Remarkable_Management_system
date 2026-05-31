@@ -5,7 +5,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import extract, func
+from sqlalchemy import case, extract, func
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.deps import ActorContext, get_actor_context, get_db
@@ -37,7 +37,14 @@ from app.services.ledger_service import (
 
 router = APIRouter(prefix="/barbershop/directory", tags=["barbershop"])
 
-_TEAM_ROLES = (UserRole.BARBER, UserRole.STAFF)
+_TEAM_ROLES = (UserRole.MANAGER, UserRole.BARBER, UserRole.STAFF)
+
+_TEAM_ROLE_ORDER = case(
+    (User.role == UserRole.MANAGER, 0),
+    (User.role == UserRole.BARBER, 1),
+    (User.role == UserRole.STAFF, 2),
+    else_=3,
+)
 
 
 def _require_management(actor: ActorContext) -> None:
@@ -139,9 +146,11 @@ def _get_team_member(db: Session, user_id: uuid.UUID) -> User | None:
 def list_team(
     db: Session = Depends(get_db),
     actor: ActorContext = Depends(get_actor_context),
-    role: str | None = Query(None, description="Filter: barber, staff, or omit for all"),
+    role: str | None = Query(
+        None, description="Filter: manager, barber, staff, or omit for all"
+    ),
 ) -> dict:
-    """Active barbers and staff with current-month performance snapshots."""
+    """Active managers, barbers, and staff with current-month performance snapshots."""
     _require_management(actor)
     now = datetime.now(shop_tz())
     y, m = now.year, now.month
@@ -153,9 +162,11 @@ def list_team(
             User.role.in_(_TEAM_ROLES),
             User.account_status == AccountStatus.ACTIVE,
         )
-        .order_by(User.role.asc(), User.username.asc())
+        .order_by(_TEAM_ROLE_ORDER.asc(), User.username.asc())
     )
-    if role == "barber":
+    if role == "manager":
+        q = q.filter(User.role == UserRole.MANAGER)
+    elif role == "barber":
         q = q.filter(User.role == UserRole.BARBER)
     elif role == "staff":
         q = q.filter(User.role == UserRole.STAFF)

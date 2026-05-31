@@ -125,7 +125,7 @@ export type BarberProfile = {
 };
 
 export type TeamMemberProfile = BarberProfile & {
-  role: "barber" | "staff";
+  role: "manager" | "barber" | "staff";
   fixedSalary: number | null;
 };
 

@@ -116,10 +116,12 @@ export function AddEntryFab({
       const svcItems = svc.items;
       const saleItems = sales.items;
       const expItems = exp.items;
-      const memberItems = roster.items.map((m) => ({
-        id: m.id,
-        name: m.full_name?.trim() || `@${m.username}`,
-      }));
+      const memberItems = roster.items
+        .filter((m) => m.role === "barber" || m.role === "staff")
+        .map((m) => ({
+          id: m.id,
+          name: m.full_name?.trim() || `@${m.username}`,
+        }));
 
       setServiceTypes(svcItems);
       setSaleCategories(saleItems);

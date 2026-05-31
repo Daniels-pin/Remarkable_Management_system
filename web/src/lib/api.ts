@@ -481,7 +481,7 @@ export type MonthPayoutBreakdown = {
 };
 
 export type DirectoryTeamRow = DirectoryBarberRow & {
-  role: "barber" | "staff";
+  role: "manager" | "barber" | "staff";
   fixed_salary?: string | null;
   current_month_revenue: string;
   current_month_services_count: number;
@@ -491,7 +491,7 @@ export type DirectoryTeamRow = DirectoryBarberRow & {
   reconciliation_posture: ReconciliationPosture;
 };
 
-export function listDirectoryTeam(role?: "barber" | "staff") {
+export function listDirectoryTeam(role?: "manager" | "barber" | "staff") {
   const qs = role ? `?role=${role}` : "";
   return apiFetch<{ items: DirectoryTeamRow[]; year: number; month: number }>(
     `/api/v1/barbershop/directory/team${qs}`,
@@ -697,7 +697,7 @@ export type DirectoryBarberDetail = {
 };
 
 export type DirectoryTeamDetail = DirectoryBarberDetail & {
-  role: "barber" | "staff";
+  role: "manager" | "barber" | "staff";
   fixed_salary?: string | null;
 };
 
@@ -726,7 +726,7 @@ export function getDirectoryTeamMemberMonthStats(
     found: boolean;
     year?: number;
     month?: number;
-    role?: "barber" | "staff";
+    role?: "manager" | "barber" | "staff";
     commission_pct?: string;
     fixed_salary?: string | null;
     salary_type?: SalaryType;

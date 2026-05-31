@@ -9,6 +9,7 @@ import {
 } from "@/components/ops/payout-with-attendance";
 import { formatNaira, formatServicesCount } from "@/lib/format";
 import type { BarberProfile, TeamMemberProfile } from "@/lib/ops-types";
+import { teamRoleLabel } from "@/lib/team-roles";
 import { cn } from "@/lib/utils";
 
 function isTeamProfile(p: BarberProfile | TeamMemberProfile): p is TeamMemberProfile {
@@ -159,7 +160,7 @@ function ProfileHeaderInner({
             </h2>
             {team ? (
               <span className="rounded-full border border-[var(--border)] bg-[var(--muted)] px-2.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-[var(--muted-foreground)]">
-                {profile.role === "barber" ? "Barber" : "Staff"}
+                {teamRoleLabel(profile.role)}
               </span>
             ) : null}
           </div>
@@ -167,13 +168,17 @@ function ProfileHeaderInner({
             {profile.email} · {profile.phone}
           </p>
         </div>
-        {team ? (
+        {team && profile.role !== "manager" ? (
           <div>
             <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
               Pay structure
             </p>
             <p className="mt-1 text-sm text-[var(--foreground)]">{payStructureSummary(profile)}</p>
           </div>
+        ) : team && profile.role === "manager" ? (
+          <p className="text-sm text-[var(--muted-foreground)]">
+            Management account — payroll and service reconciliation do not apply.
+          </p>
         ) : (
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
@@ -226,19 +231,21 @@ export function TeamMemberProfileView({
   return (
     <div className={cn("space-y-8", variant === "embedded" && "space-y-6")}>
       <ProfileHeaderInner profile={profile} variant={variant} />
-      <div className="grid gap-4 lg:grid-cols-2">
-        <FinanceSummaryCard
-          title="This month"
-          stats={profile.monthStats}
-          payoutLabel={payoutLabel}
-          payoutBreakdown={monthPayoutBreakdown}
-        />
-        <FinanceSummaryCard
-          title="All-time"
-          stats={profile.allTimeStats}
-          payoutLabel={payoutLabel}
-        />
-      </div>
+      {profile.role !== "manager" ? (
+        <div className="grid gap-4 lg:grid-cols-2">
+          <FinanceSummaryCard
+            title="This month"
+            stats={profile.monthStats}
+            payoutLabel={payoutLabel}
+            payoutBreakdown={monthPayoutBreakdown}
+          />
+          <FinanceSummaryCard
+            title="All-time"
+            stats={profile.allTimeStats}
+            payoutLabel={payoutLabel}
+          />
+        </div>
+      ) : null}
     </div>
   );
 }
