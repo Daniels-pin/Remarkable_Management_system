@@ -10,6 +10,7 @@ def set_session_cookie(response: Response, *, value: str, settings: Settings) ->
         httponly=True,
         secure=settings.session_cookie_secure,
         samesite=settings.session_cookie_samesite,
+        path="/",
         max_age=settings.session_idle_minutes * 60,
     )
 
@@ -17,6 +18,7 @@ def set_session_cookie(response: Response, *, value: str, settings: Settings) ->
 def clear_session_cookie(response: Response, *, settings: Settings) -> None:
     response.delete_cookie(
         settings.session_cookie_name,
+        path="/",
         secure=settings.session_cookie_secure,
         samesite=settings.session_cookie_samesite,
     )

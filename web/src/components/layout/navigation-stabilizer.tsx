@@ -27,8 +27,8 @@ function clearStaleInteractionBlockers() {
 }
 
 /**
- * Safety net for orphaned Radix layers after client navigations.
- * Cross-workspace switches use full document navigation; this covers in-app routes.
+ * Safety net for orphaned Radix layers after client navigations (including
+ * cross-workspace switches via Next.js router).
  */
 export function NavigationStabilizer() {
   const pathname = usePathname();

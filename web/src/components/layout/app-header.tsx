@@ -13,7 +13,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { useAuth } from "@/components/providers/auth-provider";
+import { SESSION_WARN_SECONDS, useAuth } from "@/components/providers/auth-provider";
 import { cn } from "@/lib/utils";
 
 type AppHeaderProps = {
@@ -32,10 +32,9 @@ export function AppHeader({
   headerActions,
 }: AppHeaderProps) {
   const { setTheme, resolvedTheme } = useTheme();
-  const { session, logout, refresh } = useAuth();
+  const { session, logout, refresh, warnAtSeconds } = useAuth();
   const impersonating = Boolean(session?.impersonating);
-  const seconds = session?.seconds_until_expiry ?? 0;
-  const expiringSoon = seconds > 0 && seconds <= 5 * 60;
+  const expiringSoon = warnAtSeconds > 0 && warnAtSeconds <= SESSION_WARN_SECONDS;
   const [mounted, setMounted] = React.useState(false);
   React.useEffect(() => {
     const id = requestAnimationFrame(() => setMounted(true));
@@ -45,7 +44,7 @@ export function AppHeader({
   return (
     <header
       className={cn(
-        "sticky top-0 z-30 flex h-14 shrink-0 items-center gap-3 border-b px-4 backdrop-blur-md md:px-6",
+        "sticky top-0 z-30 flex h-14 shrink-0 items-center gap-2 border-b px-3 backdrop-blur-md sm:gap-3 sm:px-4 md:px-6",
         impersonating
           ? "border-amber-500/40 bg-[var(--background)]/90 supports-[backdrop-filter]:bg-[var(--background)]/75"
           : "border-[var(--border)] bg-[var(--background)]/80 supports-[backdrop-filter]:bg-[var(--background)]/65",
@@ -74,18 +73,21 @@ export function AppHeader({
         ) : null}
       </div>
       {headerActions ? (
-        <div className="hidden shrink-0 items-center gap-2 md:flex">{headerActions}</div>
+        <div className="flex shrink-0 items-center gap-1.5 overflow-x-auto sm:gap-2">
+          {headerActions}
+        </div>
       ) : null}
-      <div className="flex items-center gap-1">
+      <div className="flex shrink-0 items-center gap-0.5 sm:gap-1">
         {expiringSoon ? (
           <Button
             type="button"
             variant="outline"
             size="sm"
-            className="hidden rounded-full border-dashed text-xs md:inline-flex"
-            onClick={() => void refresh()}
+            className="rounded-full border-dashed px-2 text-[10px] sm:px-3 sm:text-xs"
+            onClick={() => void refresh({ silent: true })}
           >
-            Session expiring · extend
+            <span className="sm:hidden">Extend</span>
+            <span className="hidden sm:inline">Session expiring · extend</span>
           </Button>
         ) : null}
         <Button

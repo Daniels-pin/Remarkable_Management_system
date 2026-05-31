@@ -9,5 +9,8 @@ services:
       - key: PYTHON_VERSION
         value: "3.11.9"
       # Comma-separated Vercel URL(s), e.g. https://your-app.vercel.app
+      # Required when the frontend calls the API directly. With the Next.js
+      # API proxy (API_PROXY_TARGET on Vercel), browser traffic is same-origin
+      # and CORS is only needed for non-proxied clients.
       - key: CORS_ORIGINS
         sync: false

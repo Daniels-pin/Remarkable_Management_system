@@ -1,8 +1,16 @@
-const base = () =>
-  (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000").replace(
-    /\/$/,
-    "",
-  );
+/** Browser calls same-origin `/api/*` (proxied by Next.js). SSR uses direct URL. */
+function apiBase(): string {
+  if (typeof window !== "undefined") {
+    return "";
+  }
+  const target =
+    process.env.API_PROXY_TARGET ??
+    process.env.NEXT_PUBLIC_API_BASE_URL ??
+    "http://localhost:8000";
+  return target.replace(/\/$/, "");
+}
+
+const base = apiBase;
 
 export type UserRole = "admin" | "manager" | "barber" | "staff";
 
@@ -21,27 +29,58 @@ type ApiErrorBody = { message?: string; code?: string };
 export class ApiError extends Error {
   readonly status: number;
   readonly code?: string;
+  /** Session/auth 401s are handled globally — skip user-facing toasts. */
+  readonly skipUserNotification: boolean;
 
   constructor(status: number, message: string, code?: string) {
     super(message);
     this.status = status;
     this.code = code;
+    this.skipUserNotification =
+      status === 401 &&
+      (code === "NO_SESSION" || code === "SESSION_INVALID" || code === "ACCOUNT_INACTIVE");
   }
 }
+
+export class NetworkError extends Error {
+  constructor(message = "Network request failed") {
+    super(message);
+    this.name = "NetworkError";
+  }
+}
+
+export function isSessionAuthError(error: unknown): boolean {
+  return error instanceof ApiError && error.skipUserNotification;
+}
+
+const SESSION_INVALID_EVENT = "remarkable:session-invalid";
+
+function notifySessionInvalid() {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent(SESSION_INVALID_EVENT));
+  }
+}
+
+export { SESSION_INVALID_EVENT };
 
 export async function apiFetch<T>(
   path: string,
   init?: RequestInit,
 ): Promise<T> {
   const url = `${base()}${path.startsWith("/") ? path : `/${path}`}`;
-  const res = await fetch(url, {
-    ...init,
-    credentials: "include",
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {}),
-    },
-  });
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      ...init,
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/json",
+        ...(init?.headers ?? {}),
+      },
+    });
+  } catch {
+    throw new NetworkError();
+  }
 
   if (res.status === 204) {
     return undefined as T;
@@ -65,7 +104,11 @@ export async function apiFetch<T>(
         if (typeof d.code === "string") code = d.code;
       }
     }
-    throw new ApiError(res.status, msg, code);
+    const err = new ApiError(res.status, msg, code);
+    if (err.skipUserNotification) {
+      notifySessionInvalid();
+    }
+    throw err;
   }
 
   return json as T;
@@ -1541,13 +1584,18 @@ export function recordFurnitureOrderDeposit(
 
 async function apiFetchBlob(path: string, init?: RequestInit): Promise<Blob> {
   const url = `${base()}${path.startsWith("/") ? path : `/${path}`}`;
-  const res = await fetch(url, {
-    ...init,
-    credentials: "include",
-    headers: {
-      ...(init?.headers ?? {}),
-    },
-  });
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      ...init,
+      credentials: "include",
+      headers: {
+        ...(init?.headers ?? {}),
+      },
+    });
+  } catch {
+    throw new NetworkError();
+  }
 
   if (!res.ok) {
     const text = await res.text();
@@ -1571,7 +1619,11 @@ async function apiFetchBlob(path: string, init?: RequestInit): Promise<Blob> {
         // non-JSON error body
       }
     }
-    throw new ApiError(res.status, msg, code);
+    const err = new ApiError(res.status, msg, code);
+    if (err.skipUserNotification) {
+      notifySessionInvalid();
+    }
+    throw err;
   }
 
   return res.blob();

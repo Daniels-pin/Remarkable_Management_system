@@ -48,7 +48,7 @@ export function NotificationsCenter() {
         return (
           <li
             key={n.id}
-            className="flex gap-4 rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--card)] p-4 shadow-[var(--shadow-card)]"
+            className="flex flex-col gap-3 rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--card)] p-4 shadow-[var(--shadow-card)] sm:flex-row sm:gap-4"
           >
             <div
               className={cn(
@@ -69,6 +69,7 @@ export function NotificationsCenter() {
                 })}
               </p>
             </div>
+            <div className="flex shrink-0 flex-wrap items-center gap-2 self-start sm:flex-col sm:items-stretch">
             <Button
               type="button"
               size="sm"
@@ -89,6 +90,7 @@ export function NotificationsCenter() {
                 Open
               </Link>
             ) : null}
+            </div>
           </li>
         );
       })}

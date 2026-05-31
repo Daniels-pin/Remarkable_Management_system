@@ -1,7 +1,7 @@
 "use client";
 
 import { Check, ChevronsUpDown, Scissors, Sofa } from "lucide-react";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import * as React from "react";
 
 import { useAuth } from "@/components/providers/auth-provider";
@@ -42,6 +42,7 @@ export function WorkspaceSwitcher({
   className,
 }: WorkspaceSwitcherProps) {
   const pathname = usePathname();
+  const router = useRouter();
   const { session } = useAuth();
   const [open, setOpen] = React.useState(false);
 
@@ -59,8 +60,7 @@ export function WorkspaceSwitcher({
     if (workspace === active) return;
 
     const target = getWorkspaceDefinition(workspace).homePath;
-    // Full document navigation resets Radix portals, scroll locks, and stale shell state.
-    window.location.assign(target);
+    router.push(target);
   };
 
   const trigger =

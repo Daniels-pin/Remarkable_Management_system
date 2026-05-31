@@ -278,7 +278,7 @@ export function AddEntryFab({
         aria-label={triggerLabel}
         onClick={() => setOpen(true)}
         className={cn(
-          "fixed bottom-6 right-6 z-40 h-14 w-14 rounded-full border border-[var(--border)] bg-[var(--foreground)] text-[var(--background)] shadow-[var(--shadow-elevated)]",
+          "fixed bottom-[max(1.5rem,env(safe-area-inset-bottom))] right-[max(1.5rem,env(safe-area-inset-right))] z-40 h-14 w-14 rounded-full border border-[var(--border)] bg-[var(--foreground)] text-[var(--background)] shadow-[var(--shadow-elevated)]",
           "transition-opacity duration-200 hover:opacity-95 active:scale-[0.98]",
           className,
         )}
