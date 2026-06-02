@@ -24,7 +24,7 @@ from app.schemas.operations import (
     ReconciliationMismatchResolveBody,
     VoidLedgerBody,
 )
-from app.services import catalog_service, ledger_service
+from app.services import catalog_service, inventory_service, ledger_service
 from app.services.business_time import business_date_for_instant
 from app.services.financial_month_util import require_financial_month_for_new_entry
 
@@ -81,6 +81,7 @@ def _enrich_row(
         "expense_category": {"id": str(expense.id), "name": expense.name} if expense else None,
         "record_lifecycle": str(r.record_lifecycle),
         **ledger_service.ledger_entry_void_metadata(db, r),
+        "product_sale": inventory_service.enrich_ledger_with_product_sale(db, r),
     }
 
 
@@ -159,6 +160,17 @@ def create_ledger_entry(
         return _enrich_row(db, row)
 
     if entry_type == "sale":
+        if body.get("product_id"):
+            from app.schemas.inventory import ProductSaleCreate
+
+            parsed_sale = ProductSaleCreate.model_validate(body)
+            row, _sale = inventory_service.create_product_sale(
+                db, actor=actor.user, body=parsed_sale
+            )
+            db.commit()
+            db.refresh(row)
+            return _enrich_row(db, row)
+
         parsed = LedgerEntryCreateSale.model_validate(body)
         catalog_service.assert_sale_category_selectable(db, parsed.sale_category_id)
         business_date = business_date_for_instant(parsed.occurred_at)
@@ -218,8 +230,11 @@ def reconciliation_inbox(
 ) -> dict:
     """Pending or mismatch service slots for the operational reconciliation inbox."""
     require_manager_or_admin(actor.user)
-    items = ledger_service.list_reconciliation_inbox(db, inbox_filter=filter, limit=200)
-    return {"filter": filter, "items": items, "total": len(items)}
+    normalized_filter = filter.split(":", 1)[0].strip()
+    items = ledger_service.list_reconciliation_inbox(
+        db, inbox_filter=normalized_filter, limit=200
+    )
+    return {"filter": normalized_filter, "items": items, "total": len(items)}
 
 
 @router.get("/reconciliation-counts")

@@ -60,6 +60,12 @@ export const barbershopNav: NavItem[] = [
     roles: managerUp,
   },
   {
+    label: "Inventory",
+    href: "/barbershop/inventory",
+    icon: Package,
+    roles: managerUp,
+  },
+  {
     label: "Finance",
     href: "/barbershop/finance",
     icon: CreditCard,

@@ -346,7 +346,10 @@ def find_employee_row_at_index(
             LedgerEntry.financial_month_id == financial_month_id,
             LedgerEntry.barber_sequence_index == index,
         )
-        .one_or_none()
+        # Local/test data can contain duplicates for the same slot; prefer the latest row
+        # rather than crashing with MultipleResultsFound.
+        .order_by(LedgerEntry.occurred_at.desc(), LedgerEntry.created_at.desc())
+        .first()
     )
 
 
@@ -632,7 +635,10 @@ def find_manager_row_at_index(
             LedgerEntry.financial_month_id == financial_month_id,
             LedgerEntry.barber_sequence_index == index,
         )
-        .one_or_none()
+        # Local/test data can contain duplicates for the same slot; prefer the latest row
+        # rather than crashing with MultipleResultsFound.
+        .order_by(LedgerEntry.occurred_at.desc(), LedgerEntry.created_at.desc())
+        .first()
     )
 
 
@@ -1102,6 +1108,9 @@ def list_reconciliation_inbox(
             LedgerEntry.record_stream.isnot(None),
             LedgerEntry.barber_sequence_index.isnot(None),
             LedgerEntry.employee_user_id.isnot(None),
+            # Pairing logic relies on financial_month_id + index; legacy rows missing it can
+            # cause ambiguous lookups (MultipleResultsFound) and crash the inbox.
+            LedgerEntry.financial_month_id.isnot(None),
         )
         .order_by(LedgerEntry.occurred_at.desc())
         .limit(1500)
@@ -1113,7 +1122,11 @@ def list_reconciliation_inbox(
     slots: list[ReconciliationSlot] = []
 
     for row in service_rows:
-        if row.barber_sequence_index is None or row.employee_user_id is None:
+        if (
+            row.barber_sequence_index is None
+            or row.employee_user_id is None
+            or row.financial_month_id is None
+        ):
             continue
         slot_key = (row.employee_user_id, row.financial_month_id, row.barber_sequence_index)
         if slot_key in seen_slots:
@@ -1660,6 +1673,10 @@ def _void_by_manager(
             impersonator_id=impersonator_id,
             ip_address=ip_address,
         )
+        if row.entry_type == LedgerEntryType.SALE:
+            from app.services import inventory_service
+
+            inventory_service.restore_stock_for_voided_sale(db, ledger_entry=row, actor=actor)
         db.flush()
         return row
 

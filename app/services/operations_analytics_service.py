@@ -22,6 +22,7 @@ from app.models.enums import (
 )
 from app.models.ledger import LedgerEntry
 from app.services.business_time import shop_tz
+from app.services import inventory_service
 from app.services.ledger_service import (
     first_operational_occurred_at,
     official_services_count_for_calendar_month,
@@ -176,12 +177,18 @@ def financial_snapshot(
     services_revenue = _decimal(
         official_services_revenue_in_range(db, start=start, end=end)
     )
+    inventory_totals = inventory_service.product_sales_totals_in_range(
+        db, start=start, end=end
+    )
+    tracked_product_revenue = inventory_totals["revenue"]
     product_sales = _decimal(
         _active_in_range(db, start, end)
         .filter(LedgerEntry.entry_type == LedgerEntryType.SALE)
         .with_entities(func.coalesce(func.sum(LedgerEntry.amount), 0))
         .scalar()
     )
+    if tracked_product_revenue > _ZERO:
+        product_sales = tracked_product_revenue
 
     expense_rows = (
         _active_in_range(db, start, end)
@@ -264,10 +271,17 @@ def financial_snapshot(
         if method in payment_methods:
             payment_methods[method] += _decimal(row.amount)
 
+    inventory_value = inventory_service.inventory_value_total(db)
+    product_cost = inventory_totals["cost"]
+    product_profit = inventory_totals["profit"]
+
     return {
         "total_revenue": str(total_revenue),
         "services_revenue": str(services_revenue),
         "product_sales_revenue": str(product_sales),
+        "product_cost": str(product_cost),
+        "product_profit": str(product_profit),
+        "inventory_value": str(inventory_value),
         "total_expenses": str(total_expenses),
         "operational_expenses": str(operational_expenses),
         "rent_expenses": str(rent_expenses),
@@ -295,12 +309,15 @@ def shape_summary_for_role(snapshot: dict, role: UserRole | str) -> dict:
 
     operational = snapshot["operational_expenses"]
     sources = snapshot["expense_sources"]
-    return {
+    masked = {
         **snapshot,
         "total_expenses": operational,
         "rent_expenses": "0",
         "payroll_commission": "0",
         "net_profit": "0",
+        "product_cost": "0",
+        "product_profit": "0",
+        "inventory_value": "0",
         "expense_sources": {
             **sources,
             "shop_cash": sources["operational_shop_cash"],
@@ -311,6 +328,7 @@ def shape_summary_for_role(snapshot: dict, role: UserRole | str) -> dict:
             "operational_total": operational,
         },
     }
+    return masked
 
 
 def month_calendar_bounds(*, year: int, month: int) -> tuple[datetime, datetime]:

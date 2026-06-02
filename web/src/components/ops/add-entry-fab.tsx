@@ -13,7 +13,8 @@ import {
   listDirectoryTeam,
   listExpenseCategories,
   listPendingReconciliationIndexes,
-  listSaleCategories,
+  listInventoryCategories,
+  listInventoryProducts,
   listServiceTypes,
   type CategoryItem,
   type PendingReconciliationIndex,
@@ -83,7 +84,18 @@ export function AddEntryFab({
   const [saving, setSaving] = React.useState(false);
 
   const [serviceTypes, setServiceTypes] = React.useState<ServiceTypeItem[]>([]);
-  const [saleCategories, setSaleCategories] = React.useState<CategoryItem[]>([]);
+  const [inventoryCategories, setInventoryCategories] = React.useState<
+    { id: string; name: string }[]
+  >([]);
+  const [inventoryProducts, setInventoryProducts] = React.useState<
+    {
+      id: string;
+      name: string;
+      category_id: string;
+      default_selling_price: string;
+      stock_quantity: number;
+    }[]
+  >([]);
   const [expenseCategories, setExpenseCategories] = React.useState<CategoryItem[]>([]);
   const [teamMembers, setTeamMembers] = React.useState<{ id: string; name: string }[]>([]);
 
@@ -100,21 +112,27 @@ export function AddEntryFab({
   );
   const [pendingIndexes, setPendingIndexes] = React.useState<PendingReconciliationIndex[]>([]);
 
-  const [saleCategoryId, setSaleCategoryId] = React.useState("");
+  const [inventoryCategoryId, setInventoryCategoryId] = React.useState("");
+  const [productId, setProductId] = React.useState("");
+  const [quantity, setQuantity] = React.useState("1");
+  const [customSellPrice, setCustomSellPrice] = React.useState("");
+  const [useCustomPrice, setUseCustomPrice] = React.useState(false);
   const [expenseCategoryId, setExpenseCategoryId] = React.useState("");
 
   const hydrate = React.useCallback(async () => {
     setCatalogLoading(true);
     try {
-      const [svc, sales, exp, roster] = await Promise.all([
+      const [svc, invCats, invProds, exp, roster] = await Promise.all([
         listServiceTypes(),
-        listSaleCategories(),
+        listInventoryCategories(),
+        listInventoryProducts(),
         listExpenseCategories(),
         listDirectoryTeam(),
       ]);
 
       const svcItems = svc.items;
-      const saleItems = sales.items;
+      const saleItems = invCats.items.filter((c) => c.status === "active");
+      const prodItems = invProds.items.filter((p) => p.is_active);
       const expItems = exp.items;
       const memberItems = roster.items
         .filter((m) => m.role === "barber" || m.role === "staff")
@@ -124,15 +142,27 @@ export function AddEntryFab({
         }));
 
       setServiceTypes(svcItems);
-      setSaleCategories(saleItems);
+      setInventoryCategories(saleItems.map((c) => ({ id: c.id, name: c.name })));
+      setInventoryProducts(
+        prodItems.map((p) => ({
+          id: p.id,
+          name: p.name,
+          category_id: p.category_id,
+          default_selling_price: p.default_selling_price,
+          stock_quantity: p.stock_quantity,
+        })),
+      );
       setExpenseCategories(expItems);
       setTeamMembers(memberItems);
 
       const firstActive = svcItems.find((s) => s.status === "active");
-      const firstSale = saleItems.find((s) => s.status === "active");
+      const firstCat = saleItems[0];
       const firstExpense = expItems.find((s) => s.status === "active");
       setServiceTypeId((prev) => prev || firstActive?.id || "");
-      setSaleCategoryId((prev) => prev || firstSale?.id || "");
+      setInventoryCategoryId((prev) => prev || firstCat?.id || "");
+      const catId = firstCat?.id ?? "";
+      const firstProd = prodItems.find((p) => p.category_id === catId) ?? prodItems[0];
+      setProductId((prev) => prev || firstProd?.id || "");
       setExpenseCategoryId((prev) => prev || firstExpense?.id || "");
       setEmployeeId((prev) => prev || memberItems[0]?.id || "");
     } catch (e) {
@@ -181,7 +211,16 @@ export function AddEntryFab({
     setEmployeeId(teamMembers[0]?.id ?? "");
     setPaymentMethod("cash");
     setExpensePaymentSource("cash_shop");
-    setSaleCategoryId(saleCategories.find((s) => s.status === "active")?.id ?? "");
+    const firstCat = inventoryCategories[0]?.id ?? "";
+    setInventoryCategoryId(firstCat);
+    setProductId(
+      inventoryProducts.find((p) => p.category_id === firstCat)?.id ??
+        inventoryProducts[0]?.id ??
+        "",
+    );
+    setQuantity("1");
+    setCustomSellPrice("");
+    setUseCustomPrice(false);
     setExpenseCategoryId(expenseCategories.find((s) => s.status === "active")?.id ?? "");
     setBusinessDate(new Date().toISOString().slice(0, 10));
     setPendingIndexes([]);
@@ -190,7 +229,7 @@ export function AddEntryFab({
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     const n = Number(amount.replace(/,/g, ""));
-    if (!Number.isFinite(n) || n <= 0) {
+    if (kind !== "sale" && (!Number.isFinite(n) || n <= 0)) {
       toast.error("Enter a valid amount");
       return;
     }
@@ -205,9 +244,25 @@ export function AddEntryFab({
         return;
       }
     }
-    if (kind === "sale" && !saleCategoryId) {
-      toast.error("Pick a sale category.");
-      return;
+    if (kind === "sale") {
+      if (!productId) {
+        toast.error("Pick a product.");
+        return;
+      }
+      if (!employeeId) {
+        toast.error("Pick who sold this product.");
+        return;
+      }
+      const qty = Number(quantity);
+      if (!Number.isFinite(qty) || qty <= 0) {
+        toast.error("Enter a valid quantity.");
+        return;
+      }
+      const selected = inventoryProducts.find((p) => p.id === productId);
+      if (selected && selected.stock_quantity < qty) {
+        toast.error(`Only ${selected.stock_quantity} in stock.`);
+        return;
+      }
     }
     if (kind === "expense" && !expenseCategoryId) {
       toast.error("Pick an expense category.");
@@ -231,13 +286,24 @@ export function AddEntryFab({
         };
         await createBarbershopLedgerEntry(body);
       } else if (kind === "sale") {
+        const qty = Number(quantity);
+        const selected = inventoryProducts.find((p) => p.id === productId);
+        const unitPrice = useCustomPrice
+          ? Number(customSellPrice.replace(/,/g, ""))
+          : Number(selected?.default_selling_price ?? 0);
+        if (!Number.isFinite(unitPrice) || unitPrice < 0) {
+          toast.error("Enter a valid selling price.");
+          return;
+        }
         await createBarbershopLedgerEntry({
           entry_type: "sale",
           occurred_at,
-          amount: n,
           payment_method: paymentMethod,
           note: noteValue,
-          sale_category_id: saleCategoryId,
+          product_id: productId,
+          quantity: qty,
+          sold_by_user_id: employeeId,
+          unit_selling_price: useCustomPrice ? unitPrice : undefined,
         });
       } else {
         await createBarbershopLedgerEntry({
@@ -250,8 +316,19 @@ export function AddEntryFab({
         });
       }
 
+      const saleTotal =
+        kind === "sale"
+          ? (() => {
+              const qty = Number(quantity);
+              const selected = inventoryProducts.find((p) => p.id === productId);
+              const unit = useCustomPrice
+                ? Number(customSellPrice.replace(/,/g, ""))
+                : Number(selected?.default_selling_price ?? 0);
+              return qty * unit;
+            })()
+          : n;
       toast.success("Entry recorded", {
-        description: `${kind.charAt(0).toUpperCase() + kind.slice(1)} · ${n.toLocaleString("en-NG")}`,
+        description: `${kind.charAt(0).toUpperCase() + kind.slice(1)} · ${saleTotal.toLocaleString("en-NG")}`,
       });
       setOpen(false);
       reset();
@@ -402,15 +479,98 @@ export function AddEntryFab({
               ) : null}
 
               {kind === "sale" ? (
-                <CategorySelect
-                  kind="sale"
-                  categories={saleCategories}
-                  value={saleCategoryId}
-                  onChange={setSaleCategoryId}
-                  onCategoriesChange={setSaleCategories}
-                  canManage={canManageCatalog}
-                  loading={catalogLoading}
-                />
+                <>
+                  <div className="space-y-1.5">
+                    <Label>Category</Label>
+                    <select
+                      value={inventoryCategoryId}
+                      onChange={(e) => {
+                        const cat = e.target.value;
+                        setInventoryCategoryId(cat);
+                        const first = inventoryProducts.find((p) => p.category_id === cat);
+                        setProductId(first?.id ?? "");
+                      }}
+                      className="flex h-10 w-full rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--input-bg)] px-3 text-sm"
+                      disabled={catalogLoading}
+                    >
+                      {inventoryCategories.length === 0 ? (
+                        <option value="">No categories — add in Inventory</option>
+                      ) : (
+                        inventoryCategories.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name}
+                          </option>
+                        ))
+                      )}
+                    </select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Product</Label>
+                    <select
+                      value={productId}
+                      onChange={(e) => setProductId(e.target.value)}
+                      className="flex h-10 w-full rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--input-bg)] px-3 text-sm"
+                      disabled={catalogLoading}
+                    >
+                      {inventoryProducts
+                        .filter((p) => p.category_id === inventoryCategoryId)
+                        .map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name} · {p.stock_quantity} in stock
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Quantity</Label>
+                    <Input
+                      inputMode="numeric"
+                      value={quantity}
+                      onChange={(e) => setQuantity(e.target.value)}
+                      required
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Sold by</Label>
+                    <select
+                      value={employeeId}
+                      onChange={(e) => setEmployeeId(e.target.value)}
+                      className="flex h-10 w-full rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--input-bg)] px-3 text-sm"
+                    >
+                      {teamMembers.map((em) => (
+                        <option key={em.id} value={em.id}>
+                          {em.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={useCustomPrice}
+                      onChange={(e) => setUseCustomPrice(e.target.checked)}
+                    />
+                    Custom sale price
+                  </label>
+                  {useCustomPrice ? (
+                    <div className="space-y-1.5">
+                      <Label>Unit price (₦)</Label>
+                      <Input
+                        inputMode="decimal"
+                        value={customSellPrice}
+                        onChange={(e) => setCustomSellPrice(e.target.value)}
+                      />
+                    </div>
+                  ) : (
+                    <p className="text-xs text-[var(--muted-foreground)]">
+                      Default price: ₦
+                      {Number(
+                        inventoryProducts.find((p) => p.id === productId)
+                          ?.default_selling_price ?? 0,
+                      ).toLocaleString("en-NG")}
+                    </p>
+                  )}
+                </>
               ) : null}
 
               {kind === "expense" ? (
@@ -425,17 +585,19 @@ export function AddEntryFab({
                 />
               ) : null}
 
-              <div className="space-y-1.5">
-                <Label htmlFor="amt">Amount (₦)</Label>
-                <Input
-                  id="amt"
-                  inputMode="decimal"
-                  value={amount}
-                  onChange={(e) => setAmount(e.target.value)}
-                  placeholder="0"
-                  required
-                />
-              </div>
+              {kind !== "sale" ? (
+                <div className="space-y-1.5">
+                  <Label htmlFor="amt">Amount (₦)</Label>
+                  <Input
+                    id="amt"
+                    inputMode="decimal"
+                    value={amount}
+                    onChange={(e) => setAmount(e.target.value)}
+                    placeholder="0"
+                    required
+                  />
+                </div>
+              ) : null}
 
               {kind === "expense" ? (
                 <div className="space-y-1.5">

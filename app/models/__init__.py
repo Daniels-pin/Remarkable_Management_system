@@ -5,6 +5,12 @@ from app.models.barber_daily_summary import BarberDailySummary
 from app.models.barber_sequence_counter import BarberSequenceCounter
 from app.models.shop_ledger_sequence_counter import ShopLedgerSequenceCounter
 from app.models.catalog import ExpenseCategory, SaleCategory, ServiceType
+from app.models.inventory import (
+    InventoryCategory,
+    InventoryProduct,
+    InventoryProductSale,
+    InventoryStockMovement,
+)
 from app.models.commission import MonthlyCommissionStatement
 from app.models.financial_month import FinancialMonth, MonthReopenEvent
 from app.models.financial_month_snapshot import FinancialMonthSnapshot
@@ -20,6 +26,10 @@ __all__ = [
     "BarberDailySummary",
     "BarberSequenceCounter",
     "ExpenseCategory",
+    "InventoryCategory",
+    "InventoryProduct",
+    "InventoryProductSale",
+    "InventoryStockMovement",
     "FinancialMonth",
     "FinancialMonthSnapshot",
     "LedgerEntry",

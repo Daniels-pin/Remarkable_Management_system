@@ -208,9 +208,15 @@ export function AdminOperationsDashboard() {
             hint="Core service tickets"
           />
           <SummaryMetricCard
-            label="Product sales"
+            label="Product revenue"
             value={formatNaira(current.productSalesRevenue)}
             hint="Retail at chair & desk"
+          />
+          <SummaryMetricCard
+            label="Product profit"
+            value={formatNaira(current.productProfit)}
+            tone="positive"
+            hint="Revenue minus cost of goods sold"
           />
           <SummaryMetricCard
             label="Net profit"
@@ -224,6 +230,17 @@ export function AdminOperationsDashboard() {
           />
         </div>
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <SummaryMetricCard
+            label="Product cost"
+            value={formatNaira(current.productCost)}
+            hint="COGS for inventory sales in range"
+          />
+          <SummaryMetricCard
+            label="Inventory value"
+            value={formatNaira(current.inventoryValue)}
+            hint="Stock on hand at cost price"
+            tone="muted"
+          />
           <SummaryMetricCard
             label="Total expenses"
             value={formatNaira(current.totalExpenses)}

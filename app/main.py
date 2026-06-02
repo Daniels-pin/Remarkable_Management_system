@@ -20,6 +20,7 @@ from app.routers import (
     barber_ops,
     barbershop_analytics,
     barbershop_attendance,
+    barbershop_inventory,
     barbershop_catalog,
     barbershop_directory,
     barbershop_ledger,
@@ -105,5 +106,6 @@ api_v1.include_router(barbershop_directory.router)
 api_v1.include_router(barbershop_ledger.router)
 api_v1.include_router(barbershop_analytics.router)
 api_v1.include_router(barbershop_attendance.router)
+api_v1.include_router(barbershop_inventory.router)
 api_v1.include_router(furniture_router)
 app.include_router(api_v1)

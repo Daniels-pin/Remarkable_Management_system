@@ -278,6 +278,9 @@ export type OperationsSummaryResponse = {
   total_revenue: string;
   services_revenue: string;
   product_sales_revenue: string;
+  product_cost?: string;
+  product_profit?: string;
+  inventory_value?: string;
   total_expenses: string;
   operational_expenses: string;
   rent_expenses?: string;
@@ -286,6 +289,195 @@ export type OperationsSummaryResponse = {
   expense_sources: ExpenseSourcesRow;
   payment_methods: Record<string, string>;
 };
+
+export type InventoryCategoryItem = {
+  id: string;
+  name: string;
+  status: CategoryStatus;
+  is_active: boolean;
+  sort_order: number;
+};
+
+export type InventoryProductItem = {
+  id: string;
+  category_id: string;
+  category_name: string | null;
+  name: string;
+  cost_price: string;
+  default_selling_price: string;
+  stock_quantity: number;
+  low_stock_threshold: number;
+  image_url: string | null;
+  status: CategoryStatus;
+  is_active: boolean;
+  is_low_stock: boolean;
+  inventory_value: string;
+  sort_order: number;
+};
+
+export type InventoryProductDetail = InventoryProductItem & {
+  revenue_generated: string;
+  cost_generated: string;
+  profit_generated: string;
+  units_sold: number;
+  stock_movements: InventoryStockMovementItem[];
+};
+
+export type InventoryStockMovementItem = {
+  id: string;
+  product_id: string;
+  product_name?: string | null;
+  movement_type: string;
+  quantity_delta: number;
+  quantity_before: number;
+  quantity_after: number;
+  unit_cost: string | null;
+  note: string | null;
+  created_at: string | null;
+};
+
+export type ProductSaleLedgerMeta = {
+  id: string;
+  product_id: string;
+  product_name: string | null;
+  category_name: string | null;
+  quantity: number;
+  unit_cost_price: string;
+  unit_selling_price: string;
+  revenue: string;
+  cost: string;
+  profit: string;
+  sold_by_user_id: string;
+  sold_by_label: string | null;
+};
+
+export function listInventoryCategories(options?: { includeInactive?: boolean }) {
+  const qs = options?.includeInactive ? "?include_inactive=true" : "";
+  return apiFetch<{ items: InventoryCategoryItem[] }>(
+    `/api/v1/barbershop/inventory/categories${qs}`,
+  );
+}
+
+export function createInventoryCategory(body: { name: string; status?: CategoryStatus }) {
+  return apiFetch<InventoryCategoryItem>("/api/v1/barbershop/inventory/categories", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function updateInventoryCategory(
+  id: string,
+  body: { name?: string; status?: CategoryStatus },
+) {
+  return apiFetch<InventoryCategoryItem>(`/api/v1/barbershop/inventory/categories/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+export function listInventoryProducts(options?: {
+  categoryId?: string;
+  includeInactive?: boolean;
+}) {
+  const qs = new URLSearchParams();
+  if (options?.categoryId) qs.set("category_id", options.categoryId);
+  if (options?.includeInactive) qs.set("include_inactive", "true");
+  const q = qs.toString();
+  return apiFetch<{ items: InventoryProductItem[] }>(
+    `/api/v1/barbershop/inventory/products${q ? `?${q}` : ""}`,
+  );
+}
+
+export function getInventoryProduct(id: string) {
+  return apiFetch<InventoryProductDetail>(`/api/v1/barbershop/inventory/products/${id}`);
+}
+
+export function createInventoryProduct(body: {
+  category_id: string;
+  name: string;
+  cost_price: number;
+  default_selling_price: number;
+  opening_stock?: number;
+  low_stock_threshold?: number;
+  image_url?: string | null;
+}) {
+  return apiFetch<InventoryProductItem>("/api/v1/barbershop/inventory/products", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function updateInventoryProduct(
+  id: string,
+  body: Partial<{
+    category_id: string;
+    name: string;
+    cost_price: number;
+    default_selling_price: number;
+    low_stock_threshold: number;
+    image_url: string | null;
+    status: CategoryStatus;
+  }>,
+) {
+  return apiFetch<InventoryProductItem>(`/api/v1/barbershop/inventory/products/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+export function stockInInventoryProduct(
+  id: string,
+  body: { quantity: number; note?: string | null },
+) {
+  return apiFetch<{ movement: InventoryStockMovementItem; product: InventoryProductItem }>(
+    `/api/v1/barbershop/inventory/products/${id}/stock-in`,
+    { method: "POST", body: JSON.stringify(body) },
+  );
+}
+
+export function adjustInventoryStock(
+  id: string,
+  body: { quantity_delta: number; note?: string | null },
+) {
+  return apiFetch<{ movement: InventoryStockMovementItem; product: InventoryProductItem }>(
+    `/api/v1/barbershop/inventory/products/${id}/adjust`,
+    { method: "POST", body: JSON.stringify(body) },
+  );
+}
+
+export function recordInventoryProductSale(body: Record<string, unknown>) {
+  return apiFetch<{
+    ledger_entry_id: string;
+    index_label: string | null;
+    amount: string;
+    product_sale: ProductSaleLedgerMeta;
+  }>("/api/v1/barbershop/inventory/sales", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function listLowStockProducts() {
+  return apiFetch<{ items: InventoryProductItem[] }>("/api/v1/barbershop/inventory/low-stock");
+}
+
+export function getInventorySummary(params?: {
+  preset?: string;
+  from?: string;
+  to?: string;
+}) {
+  const qs = new URLSearchParams();
+  if (params?.preset) qs.set("preset", params.preset);
+  if (params?.from) qs.set("from", params.from);
+  if (params?.to) qs.set("to", params.to);
+  const q = qs.toString();
+  return apiFetch<{
+    inventory_value: string;
+    period: { product_revenue: string; product_cost: string; product_profit: string };
+    all_time?: { product_revenue: string; product_cost: string; product_profit: string };
+    low_stock_count: number;
+  }>(`/api/v1/barbershop/inventory/summary${q ? `?${q}` : ""}`);
+}
 
 export function listFinancialMonths() {
   return apiFetch<{ items: FinancialMonthRow[]; note?: string }>("/api/v1/finance/months");
@@ -531,6 +723,7 @@ export type LedgerRow = {
   is_manager_created_without_barber?: boolean;
   service_type: { id: string; name: string } | null;
   sale_category: { id: string; name: string } | null;
+  product_sale: ProductSaleLedgerMeta | null;
   expense_category: { id: string; name: string } | null;
   record_lifecycle: "active" | "deleted" | "purged";
   is_voided?: boolean;

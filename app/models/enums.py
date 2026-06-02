@@ -124,3 +124,13 @@ class AttendanceStatus(StrEnum):
     ON_TIME = "on_time"
     LATE = "late"
     ABSENT = "absent"
+
+
+class InventoryStockMovementType(StrEnum):
+    """Auditable stock ledger for barbershop retail inventory."""
+
+    STOCK_IN = "stock_in"
+    SALE = "sale"
+    VOID_RESTORE = "void_restore"
+    ADJUSTMENT = "adjustment"
+    OPENING = "opening"

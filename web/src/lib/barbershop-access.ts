@@ -49,6 +49,9 @@ export function isBarbershopPathAllowed(
   if (pathname.startsWith("/barbershop/expenses")) {
     return canAccessBarberManagement(role);
   }
+  if (pathname.startsWith("/barbershop/inventory")) {
+    return canAccessBarberManagement(role);
+  }
   if (pathname.startsWith("/barbershop/users")) {
     return canAccessBarbershopUsers(role);
   }
