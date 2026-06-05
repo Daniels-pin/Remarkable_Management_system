@@ -49,18 +49,56 @@ export function validateRadiusMeters(value: number): string | null {
   return null;
 }
 
-export function attendanceStatusLabel(status: string | null | undefined): string {
+export function attendanceStatusLabel(status: string | null | undefined, isWaived = false): string {
   const normalized = (status ?? "").toLowerCase();
+  let base: string;
   switch (normalized) {
     case "on_time":
-      return "On time";
+      base = "On time";
+      break;
     case "late":
-      return "Late sign-in";
+      base = "Late sign-in";
+      break;
     case "absent":
-      return "Absent";
+      base = "Absent";
+      break;
     default:
-      return "Not signed in";
+      base = "Not signed in";
   }
+  if (isWaived && (normalized === "late" || normalized === "absent")) {
+    return `${base} (Waived By Admin)`;
+  }
+  return base;
+}
+
+export const WAIVER_REASON_PRESETS = [
+  "Heavy Rainfall",
+  "Medical Emergency",
+  "Approved Sick Leave",
+  "Public Holiday",
+  "Shop Closed",
+  "Fuel Scarcity",
+  "Security Concerns",
+  "Special Operational Situation",
+] as const;
+
+export function canWaiveRecord(row: {
+  is_waived?: boolean;
+  deduction_amount?: string;
+  status?: string;
+}): boolean {
+  if (row.is_waived) return false;
+  if (Number(row.deduction_amount || 0) > 0) return true;
+  const status = (row.status ?? "").toLowerCase();
+  return status === "late" || status === "absent";
+}
+
+export function todayIsoDate(): string {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
 }
 
 export function attendanceStatusTone(status: string | null | undefined): string {

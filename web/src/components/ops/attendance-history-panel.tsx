@@ -4,6 +4,7 @@ import * as React from "react";
 import Link from "next/link";
 import { toast } from "sonner";
 
+import { AttendanceIndividualWaiverModal } from "@/components/ops/attendance-waiver-modals";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import {
@@ -15,6 +16,7 @@ import {
 import {
   attendanceStatusLabel,
   attendanceStatusTone,
+  canWaiveRecord,
   currentAttendanceMonth,
   EMPTY_ATTENDANCE_SUMMARY,
   monthPickerOptions,
@@ -26,19 +28,25 @@ import { cn } from "@/lib/utils";
 
 type Props = {
   userId?: string;
+  employeeName?: string;
+  adminMode?: boolean;
   /** When true, loads a specific employee via userId — never the signed-in admin /me route. */
   managementMode?: boolean;
   showSummary?: boolean;
   title?: string;
   linkToFull?: boolean;
+  refreshKey?: number;
 };
 
 export function AttendanceHistoryPanel({
   userId,
+  employeeName,
+  adminMode = false,
   managementMode = false,
   showSummary = true,
   title = "Attendance history",
   linkToFull = false,
+  refreshKey = 0,
 }: Props) {
   const initialMonth = currentAttendanceMonth();
   const [year, setYear] = React.useState(initialMonth.year);
@@ -48,6 +56,7 @@ export function AttendanceHistoryPanel({
   const [total, setTotal] = React.useState(0);
   const [items, setItems] = React.useState<AttendanceRecordRow[]>([]);
   const [summary, setSummary] = React.useState(EMPTY_ATTENDANCE_SUMMARY);
+  const [waiverTarget, setWaiverTarget] = React.useState<AttendanceRecordRow | null>(null);
   const pageSize = 10;
   const months = React.useMemo(() => monthPickerOptions(18), []);
 
@@ -78,7 +87,7 @@ export function AttendanceHistoryPanel({
     } finally {
       setLoading(false);
     }
-  }, [needsEmployeeSelection, managementMode, userId, year, month, page]);
+  }, [needsEmployeeSelection, managementMode, userId, year, month, page, refreshKey]);
 
   React.useEffect(() => {
     queueMicrotask(() => void load());
@@ -87,6 +96,7 @@ export function AttendanceHistoryPanel({
   React.useEffect(() => subscribePayoutUpdated(() => void load()), [load]);
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const resolvedEmployeeName = employeeName ?? "Employee";
 
   return (
     <div className="space-y-5">
@@ -169,6 +179,10 @@ export function AttendanceHistoryPanel({
             <ul>
               {items.map((row) => {
                 const deduction = Number(row.deduction_amount || 0);
+                const waived = Boolean(row.is_waived);
+                const originalDeduction = Number(row.original_deduction_amount || 0);
+                const showWaive = adminMode && userId && canWaiveRecord(row);
+
                 return (
                   <li
                     key={row.id}
@@ -185,27 +199,55 @@ export function AttendanceHistoryPanel({
                     </div>
                     <div className="min-w-0 flex-1">
                       <p className={cn("text-sm font-medium", attendanceStatusTone(row.status))}>
-                        {attendanceStatusLabel(row.status)}
+                        {attendanceStatusLabel(row.status, waived)}
                       </p>
                       {row.signed_in_at ? (
                         <p className="mt-0.5 text-xs tabular-nums text-[var(--muted-foreground)]">
                           {formatTimeLabel(row.signed_in_at)}
                         </p>
                       ) : null}
+                      {waived && row.waiver_reason ? (
+                        <p className="mt-1 text-[10px] text-[var(--muted-foreground)]">{row.waiver_reason}</p>
+                      ) : null}
+                      {waived ? (
+                        <span className="mt-1 inline-flex rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-800 dark:text-emerald-200">
+                          Waived By Admin
+                        </span>
+                      ) : null}
                     </div>
-                    <div className="ml-auto shrink-0 text-right">
-                      {deduction > 0 ? (
-                        <>
-                          <p className="text-sm font-semibold tabular-nums text-amber-800 dark:text-amber-200">
-                            {formatNaira(deduction)}
-                          </p>
-                          <p className="text-[10px] capitalize text-[var(--muted-foreground)]">
-                            {row.deduction_reason ?? "attendance"} deduction
-                          </p>
-                        </>
-                      ) : (
-                        <p className="text-sm text-[var(--muted-foreground)]">—</p>
-                      )}
+                    <div className="ml-auto flex shrink-0 items-center gap-3">
+                      <div className="text-right">
+                        {waived ? (
+                          <>
+                            <p className="text-sm font-semibold tabular-nums text-emerald-800 line-through opacity-60 dark:text-emerald-200">
+                              {formatNaira(originalDeduction)}
+                            </p>
+                            <p className="text-[10px] text-emerald-700 dark:text-emerald-300">Waived</p>
+                          </>
+                        ) : deduction > 0 ? (
+                          <>
+                            <p className="text-sm font-semibold tabular-nums text-amber-800 dark:text-amber-200">
+                              {formatNaira(deduction)}
+                            </p>
+                            <p className="text-[10px] capitalize text-[var(--muted-foreground)]">
+                              {row.deduction_reason ?? "attendance"} deduction
+                            </p>
+                          </>
+                        ) : (
+                          <p className="text-sm text-[var(--muted-foreground)]">—</p>
+                        )}
+                      </div>
+                      {showWaive ? (
+                        <Button
+                          size="sm"
+                          type="button"
+                          variant="outline"
+                          className="rounded-full text-xs"
+                          onClick={() => setWaiverTarget(row)}
+                        >
+                          Waive Attendance
+                        </Button>
+                      ) : null}
                     </div>
                   </li>
                 );
@@ -243,6 +285,19 @@ export function AttendanceHistoryPanel({
             </Button>
           </div>
         </div>
+      ) : null}
+
+      {adminMode && userId && waiverTarget ? (
+        <AttendanceIndividualWaiverModal
+          open={Boolean(waiverTarget)}
+          onOpenChange={(open) => {
+            if (!open) setWaiverTarget(null);
+          }}
+          userId={userId}
+          employeeName={resolvedEmployeeName}
+          businessDate={waiverTarget.business_date}
+          onApplied={() => void load()}
+        />
       ) : null}
     </div>
   );

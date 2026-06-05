@@ -38,3 +38,17 @@ class AttendanceActivateBody(BaseModel):
     """Optional explicit start date; defaults to today in shop timezone."""
 
     attendance_start_date: date | None = None
+
+
+class AttendanceWaiverBody(BaseModel):
+    reason: str = Field(..., min_length=1, max_length=2000)
+
+
+class AttendanceBulkWaiverBody(BaseModel):
+    business_date: date
+    reason: str = Field(..., min_length=1, max_length=2000)
+
+
+class AttendanceIndividualWaiverBody(BaseModel):
+    business_date: date
+    reason: str = Field(..., min_length=1, max_length=2000)

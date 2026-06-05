@@ -68,6 +68,8 @@ function AttendanceExpandedDetails({
 }) {
   const signedAt = record.signed_in_at ? formatTimeLabel(record.signed_in_at) : "—";
   const deduction = Number(record.deduction_amount || 0);
+  const waived = Boolean(record.is_waived);
+  const originalDeduction = Number(record.original_deduction_amount || 0);
   const lateMins =
     record.signed_in_at && lateTime && record.status === "late"
       ? latenessMinutes(record.signed_in_at, lateTime)
@@ -82,7 +84,7 @@ function AttendanceExpandedDetails({
       <div>
         <dt className="text-[var(--muted-foreground)]">Status</dt>
         <dd className={cn("mt-0.5 font-medium", attendanceStatusTone(record.status))}>
-          {attendanceStatusLabel(record.status)}
+          {attendanceStatusLabel(record.status, waived)}
         </dd>
       </div>
       {lateTime ? (
@@ -97,7 +99,14 @@ function AttendanceExpandedDetails({
           <dd className="mt-0.5 font-medium">{formatLatenessDuration(lateMins)}</dd>
         </div>
       ) : null}
-      {deduction > 0 ? (
+      {waived ? (
+        <div>
+          <dt className="text-[var(--muted-foreground)]">Deduction</dt>
+          <dd className="mt-0.5 font-medium text-emerald-700 dark:text-emerald-300">
+            {formatNaira(originalDeduction)} waived
+          </dd>
+        </div>
+      ) : deduction > 0 ? (
         <div>
           <dt className="text-[var(--muted-foreground)]">Deduction</dt>
           <dd className="mt-0.5 font-medium text-amber-800 dark:text-amber-200">
@@ -236,9 +245,11 @@ export function AttendanceSignInCard({ className, onUpdated }: Props) {
               {record.signed_in_at ? formatTimeLabel(record.signed_in_at) : "—"}
             </span>
             <span className={cn("font-medium", attendanceStatusTone(record.status))}>
-              {attendanceStatusLabel(record.status)}
+              {attendanceStatusLabel(record.status, Boolean(record.is_waived))}
             </span>
-            {Number(record.deduction_amount) > 0 ? (
+            {Boolean(record.is_waived) ? (
+              <span className="text-emerald-700 dark:text-emerald-300">Waived By Admin</span>
+            ) : Number(record.deduction_amount) > 0 ? (
               <span className="text-amber-800 dark:text-amber-200">
                 {formatNaira(Number(record.deduction_amount))} penalty
               </span>

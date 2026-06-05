@@ -249,7 +249,18 @@ def get_record_for_date(db: Session, *, user_id: uuid.UUID, business_date: date)
     )
 
 
-def serialize_record(row: AttendanceRecord) -> dict:
+def serialize_record(row: AttendanceRecord, *, waived_by: User | None = None) -> dict:
+    is_waived = row.waived_at is not None
+    waived_by_payload = None
+    if is_waived and waived_by is not None:
+        waived_by_payload = {
+            "id": str(waived_by.id),
+            "username": waived_by.username,
+            "full_name": waived_by.profile.full_name if waived_by.profile else None,
+        }
+    elif is_waived and row.waived_by_user_id is not None:
+        waived_by_payload = {"id": str(row.waived_by_user_id)}
+
     return {
         "id": str(row.id),
         "user_id": str(row.user_id),
@@ -260,6 +271,13 @@ def serialize_record(row: AttendanceRecord) -> dict:
         "deduction_reason": row.deduction_reason,
         "sign_in_latitude": str(row.sign_in_latitude) if row.sign_in_latitude is not None else None,
         "sign_in_longitude": str(row.sign_in_longitude) if row.sign_in_longitude is not None else None,
+        "is_waived": is_waived,
+        "waived_at": row.waived_at.isoformat() if row.waived_at else None,
+        "waiver_reason": row.waiver_reason,
+        "original_deduction_amount": (
+            str(row.original_deduction_amount) if row.original_deduction_amount is not None else None
+        ),
+        "waived_by": waived_by_payload,
     }
 
 
@@ -617,3 +635,268 @@ def list_attendance_roster(db: Session) -> list[User]:
         .order_by(_ATTENDANCE_ROLE_ORDER.asc(), User.username.asc())
         .all()
     )
+
+
+def _record_has_penalty(row: AttendanceRecord) -> bool:
+    if row.waived_at is not None:
+        return False
+    if row.deduction_amount > 0:
+        return True
+    return row.status in (AttendanceStatus.LATE, AttendanceStatus.ABSENT)
+
+
+def _apply_waiver_to_record(
+    db: Session,
+    *,
+    record: AttendanceRecord,
+    actor: User,
+    reason: str,
+    now: datetime,
+) -> AttendanceRecord:
+    if record.waived_at is not None:
+        return record
+
+    if record.deduction_amount <= 0 and record.status == AttendanceStatus.ON_TIME:
+        raise ValidationAppError(
+            "This attendance record has no penalty to waive.",
+            code="NO_PENALTY",
+        )
+
+    if record.original_deduction_amount is None:
+        record.original_deduction_amount = Decimal(record.deduction_amount)
+    elif record.deduction_amount > 0:
+        record.original_deduction_amount = Decimal(record.deduction_amount)
+
+    record.deduction_amount = _ZERO
+    record.waived_at = now
+    record.waived_by_user_id = actor.id
+    record.waiver_reason = reason.strip()
+    db.flush()
+    return record
+
+
+def waive_attendance_record(
+    db: Session,
+    *,
+    record: AttendanceRecord,
+    actor: User,
+    reason: str,
+    now: datetime | None = None,
+) -> AttendanceRecord:
+    now = now or datetime.now(shop_tz())
+    return _apply_waiver_to_record(db, record=record, actor=actor, reason=reason, now=now)
+
+
+def _ensure_record_for_waiver(
+    db: Session,
+    *,
+    user: User,
+    business_date: date,
+) -> AttendanceRecord | None:
+    record = get_record_for_date(db, user_id=user.id, business_date=business_date)
+    if record is not None:
+        return record
+
+    if not is_attendance_tracking_active(user, business_date):
+        return None
+
+    if is_user_off_day(user, business_date):
+        return None
+
+    settings = get_settings(db)
+    return _ensure_absence(db, user=user, business_date=business_date, settings=settings)
+
+
+def waive_user_attendance(
+    db: Session,
+    *,
+    user: User,
+    business_date: date,
+    actor: User,
+    reason: str,
+    now: datetime | None = None,
+) -> AttendanceRecord:
+    now = now or datetime.now(shop_tz())
+    record = _ensure_record_for_waiver(db, user=user, business_date=business_date)
+    if record is None:
+        raise ValidationAppError(
+            "No attendance penalty found for this employee on the selected date.",
+            code="NO_PENALTY",
+        )
+    return waive_attendance_record(db, record=record, actor=actor, reason=reason, now=now)
+
+
+def waive_all_for_date(
+    db: Session,
+    *,
+    business_date: date,
+    actor: User,
+    reason: str,
+    now: datetime | None = None,
+) -> list[AttendanceRecord]:
+    now = now or datetime.now(shop_tz())
+    settings = get_settings(db)
+    roster = list_attendance_roster(db)
+
+    for user in roster:
+        if is_attendance_tracking_active(user, business_date) and not is_user_off_day(user, business_date):
+            existing = get_record_for_date(db, user_id=user.id, business_date=business_date)
+            if existing is None and business_date < business_date_for_instant(now):
+                _ensure_absence(db, user=user, business_date=business_date, settings=settings)
+
+    candidates = (
+        db.query(AttendanceRecord)
+        .filter(
+            AttendanceRecord.business_date == business_date,
+            AttendanceRecord.waived_at.is_(None),
+        )
+        .all()
+    )
+
+    waived: list[AttendanceRecord] = []
+    for record in candidates:
+        if not _record_has_penalty(record):
+            continue
+        try:
+            waived.append(waive_attendance_record(db, record=record, actor=actor, reason=reason, now=now))
+        except ValidationAppError:
+            continue
+    return waived
+
+
+def _load_waived_by_users(db: Session, user_ids: set[uuid.UUID]) -> dict[uuid.UUID, User]:
+    if not user_ids:
+        return {}
+    rows = (
+        db.query(User)
+        .options(joinedload(User.profile))
+        .filter(User.id.in_(user_ids))
+        .all()
+    )
+    return {row.id: row for row in rows}
+
+
+def serialize_waiver_entry(
+    record: AttendanceRecord,
+    *,
+    employee: User | None = None,
+    waived_by: User | None = None,
+) -> dict:
+    employee_name = None
+    if employee is not None:
+        employee_name = employee.profile.full_name if employee.profile else None
+        if not employee_name:
+            employee_name = employee.username
+
+    waived_by_name = None
+    if waived_by is not None:
+        waived_by_name = waived_by.profile.full_name if waived_by.profile else None
+        if not waived_by_name:
+            waived_by_name = waived_by.username
+
+    original = record.original_deduction_amount
+    if original is None and record.deduction_amount > 0:
+        original = record.deduction_amount
+
+    return {
+        "id": str(record.id),
+        "user_id": str(record.user_id),
+        "employee_name": employee_name,
+        "business_date": record.business_date.isoformat(),
+        "status": str(record.status),
+        "waiver_reason": record.waiver_reason,
+        "waived_at": record.waived_at.isoformat() if record.waived_at else None,
+        "waived_by_user_id": str(record.waived_by_user_id) if record.waived_by_user_id else None,
+        "waived_by_name": waived_by_name,
+        "original_deduction_amount": str(original) if original is not None else "0",
+        "deduction_reason": record.deduction_reason,
+        "is_bulk": False,
+    }
+
+
+def list_waivers_for_date(db: Session, *, business_date: date) -> list[dict]:
+    rows = (
+        db.query(AttendanceRecord)
+        .filter(
+            AttendanceRecord.business_date == business_date,
+            AttendanceRecord.waived_at.isnot(None),
+        )
+        .order_by(AttendanceRecord.waived_at.desc())
+        .all()
+    )
+    if not rows:
+        return []
+
+    user_ids = {row.user_id for row in rows}
+    waived_by_ids = {row.waived_by_user_id for row in rows if row.waived_by_user_id}
+    users = _load_waived_by_users(db, user_ids | waived_by_ids)
+
+    return [
+        serialize_waiver_entry(
+            row,
+            employee=users.get(row.user_id),
+            waived_by=users.get(row.waived_by_user_id) if row.waived_by_user_id else None,
+        )
+        for row in rows
+    ]
+
+
+def list_waiver_history(
+    db: Session,
+    *,
+    page: int = 1,
+    page_size: int = 20,
+    year: int | None = None,
+    month: int | None = None,
+) -> tuple[list[dict], int]:
+    q = db.query(AttendanceRecord).filter(AttendanceRecord.waived_at.isnot(None))
+    if year is not None and month is not None:
+        start = date(year, month, 1)
+        last_day = calendar.monthrange(year, month)[1]
+        end = date(year, month, last_day)
+        q = q.filter(
+            AttendanceRecord.business_date >= start,
+            AttendanceRecord.business_date <= end,
+        )
+
+    total = q.count()
+    rows = (
+        q.order_by(AttendanceRecord.waived_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+
+    user_ids = {row.user_id for row in rows}
+    waived_by_ids = {row.waived_by_user_id for row in rows if row.waived_by_user_id}
+    users = _load_waived_by_users(db, user_ids | waived_by_ids)
+
+    items = [
+        serialize_waiver_entry(
+            row,
+            employee=users.get(row.user_id),
+            waived_by=users.get(row.waived_by_user_id) if row.waived_by_user_id else None,
+        )
+        for row in rows
+    ]
+    return items, total
+
+
+def count_waived_for_date(db: Session, *, business_date: date) -> int:
+    return (
+        db.query(AttendanceRecord)
+        .filter(
+            AttendanceRecord.business_date == business_date,
+            AttendanceRecord.waived_at.isnot(None),
+        )
+        .count()
+    )
+
+
+def enrich_records_with_waived_by(db: Session, rows: list[AttendanceRecord]) -> list[dict]:
+    waived_by_ids = {row.waived_by_user_id for row in rows if row.waived_by_user_id}
+    users = _load_waived_by_users(db, waived_by_ids)
+    return [
+        serialize_record(row, waived_by=users.get(row.waived_by_user_id) if row.waived_by_user_id else None)
+        for row in rows
+    ]

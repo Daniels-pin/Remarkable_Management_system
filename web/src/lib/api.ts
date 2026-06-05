@@ -1501,6 +1501,29 @@ export type AttendanceRecordRow = {
   deduction_reason: string | null;
   sign_in_latitude?: string | null;
   sign_in_longitude?: string | null;
+  is_waived?: boolean;
+  waived_at?: string | null;
+  waiver_reason?: string | null;
+  original_deduction_amount?: string | null;
+  waived_by?: {
+    id: string;
+    username?: string;
+    full_name?: string | null;
+  } | null;
+};
+
+export type AttendanceWaiverRow = {
+  id: string;
+  user_id: string;
+  employee_name: string | null;
+  business_date: string;
+  status: string;
+  waiver_reason: string | null;
+  waived_at: string | null;
+  waived_by_user_id: string | null;
+  waived_by_name: string | null;
+  original_deduction_amount: string;
+  deduction_reason: string | null;
 };
 
 export type AttendanceSettingsRow = {
@@ -1627,7 +1650,10 @@ export function listAttendanceTeamRoster() {
       attendance_start_date: string | null;
       today_status: string | null;
       today_signed_in_at: string | null;
+      today_record?: AttendanceRecordRow | null;
     }>;
+    waived_today_count?: number;
+    business_date?: string;
   }>("/api/v1/barbershop/attendance/team");
 }
 
@@ -1660,6 +1686,63 @@ export function activateUserAttendance(userId: string, attendanceStartDate?: str
       attendanceStartDate ? { attendance_start_date: attendanceStartDate } : {},
     ),
   });
+}
+
+export function waiveAllAttendance(body: { business_date: string; reason: string }) {
+  return apiFetch<{
+    message: string;
+    business_date: string;
+    waived_count: number;
+    items: AttendanceRecordRow[];
+  }>("/api/v1/barbershop/attendance/waivers/bulk", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function waiveUserAttendance(
+  userId: string,
+  body: { business_date: string; reason: string },
+) {
+  return apiFetch<{
+    message: string;
+    record: AttendanceRecordRow;
+    payout?: MonthPayoutBreakdown;
+  }>(`/api/v1/barbershop/attendance/waivers/users/${userId}`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function listAttendanceWaivers(params?: {
+  year?: number;
+  month?: number;
+  page?: number;
+  page_size?: number;
+}) {
+  const q = new URLSearchParams();
+  if (params?.year != null) q.set("year", String(params.year));
+  if (params?.month != null) q.set("month", String(params.month));
+  if (params?.page != null) q.set("page", String(params.page));
+  if (params?.page_size != null) q.set("page_size", String(params.page_size));
+  const suffix = q.toString() ? `?${q}` : "";
+  return apiFetch<{
+    year: number;
+    month: number;
+    page: number;
+    page_size: number;
+    total: number;
+    items: AttendanceWaiverRow[];
+  }>(`/api/v1/barbershop/attendance/waivers${suffix}`);
+}
+
+export function listWaiversForDay(date?: string) {
+  const q = date ? `?date=${encodeURIComponent(date)}` : "";
+  return apiFetch<{
+    business_date: string;
+    count: number;
+    items: AttendanceWaiverRow[];
+  }>(`/api/v1/barbershop/attendance/waivers/day${q}`);
 }
 
 // --- Furniture domain ---

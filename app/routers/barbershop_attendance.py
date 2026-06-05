@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.orm import Session
 
 from app.auth.rbac import require_admin, require_attendance_participant, require_manager_or_admin
@@ -11,11 +11,13 @@ from app.core.deps import ActorContext, get_actor_context, get_db
 from app.models.enums import UserRole
 from app.schemas.attendance import (
     AttendanceActivateBody,
+    AttendanceBulkWaiverBody,
+    AttendanceIndividualWaiverBody,
     AttendanceOffDaysUpdate,
     AttendanceSettingsUpdate,
     AttendanceSignInBody,
 )
-from app.services import attendance_service
+from app.services import attendance_service, audit_service
 from app.services.business_time import business_date_for_instant, shop_tz
 from app.services.payroll_service import month_payout_breakdown
 
@@ -141,7 +143,146 @@ def my_attendance_history(
         "page_size": page_size,
         "total": total,
         "summary": summary,
-        "items": [attendance_service.serialize_record(r) for r in rows],
+        "items": attendance_service.enrich_records_with_waived_by(db, rows),
+    }
+
+
+@router.post("/waivers/bulk")
+def waive_all_attendance(
+    body: AttendanceBulkWaiverBody,
+    request: Request,
+    db: Session = Depends(get_db),
+    actor: ActorContext = Depends(get_actor_context),
+) -> dict:
+    require_admin(actor.user)
+    _run_absence_sync(db)
+    now = datetime.now(shop_tz())
+    waived = attendance_service.waive_all_for_date(
+        db,
+        business_date=body.business_date,
+        actor=actor.user,
+        reason=body.reason,
+        now=now,
+    )
+    audit_service.write_audit_log(
+        db,
+        actor_user_id=actor.user.id,
+        impersonator_user_id=actor.impersonator.id if actor.impersonator else None,
+        action="attendance.waiver.bulk",
+        entity_type="attendance_waiver",
+        entity_id=body.business_date.isoformat(),
+        message=f"Bulk attendance waiver for {body.business_date.isoformat()}",
+        payload={
+            "business_date": body.business_date.isoformat(),
+            "reason": body.reason.strip(),
+            "waived_count": len(waived),
+            "record_ids": [str(row.id) for row in waived],
+        },
+        ip_address=request.client.host if request.client else None,
+    )
+    db.commit()
+    return {
+        "message": f"Waived attendance penalties for {len(waived)} employee(s).",
+        "business_date": body.business_date.isoformat(),
+        "waived_count": len(waived),
+        "items": attendance_service.enrich_records_with_waived_by(db, waived),
+    }
+
+
+@router.post("/waivers/users/{user_id}")
+def waive_user_attendance_penalty(
+    user_id: uuid.UUID,
+    body: AttendanceIndividualWaiverBody,
+    request: Request,
+    db: Session = Depends(get_db),
+    actor: ActorContext = Depends(get_actor_context),
+) -> dict:
+    require_admin(actor.user)
+    target = attendance_service.get_attendance_user(db, user_id)
+    _run_absence_sync(db)
+    now = datetime.now(shop_tz())
+    record = attendance_service.waive_user_attendance(
+        db,
+        user=target,
+        business_date=body.business_date,
+        actor=actor.user,
+        reason=body.reason,
+        now=now,
+    )
+    audit_service.write_audit_log(
+        db,
+        actor_user_id=actor.user.id,
+        impersonator_user_id=actor.impersonator.id if actor.impersonator else None,
+        action="attendance.waiver.individual",
+        entity_type="attendance_record",
+        entity_id=str(record.id),
+        message=f"Attendance waiver for user {target.username} on {body.business_date.isoformat()}",
+        payload={
+            "user_id": str(target.id),
+            "business_date": body.business_date.isoformat(),
+            "reason": body.reason.strip(),
+            "status": str(record.status),
+        },
+        ip_address=request.client.host if request.client else None,
+    )
+    db.commit()
+    db.refresh(record)
+    payout, _ = month_payout_breakdown(
+        db,
+        target,
+        year=body.business_date.year,
+        month=body.business_date.month,
+        sync_absences=False,
+    )
+    return {
+        "message": "Attendance penalty waived.",
+        "record": attendance_service.enrich_records_with_waived_by(db, [record])[0],
+        "payout": payout,
+    }
+
+
+@router.get("/waivers")
+def list_attendance_waivers(
+    db: Session = Depends(get_db),
+    actor: ActorContext = Depends(get_actor_context),
+    year: int | None = Query(None),
+    month: int | None = Query(None, ge=1, le=12),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+) -> dict:
+    require_admin(actor.user)
+    now = datetime.now(shop_tz())
+    y = year or now.year
+    m = month or now.month
+    items, total = attendance_service.list_waiver_history(db, year=y, month=m, page=page, page_size=page_size)
+    return {
+        "year": y,
+        "month": m,
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "items": items,
+    }
+
+
+@router.get("/waivers/day")
+def list_waivers_for_day(
+    db: Session = Depends(get_db),
+    actor: ActorContext = Depends(get_actor_context),
+    business_date: str | None = Query(None, alias="date"),
+) -> dict:
+    require_admin(actor.user)
+    now = datetime.now(shop_tz())
+    target_date = (
+        date.fromisoformat(business_date)
+        if business_date
+        else business_date_for_instant(now)
+    )
+    items = attendance_service.list_waivers_for_date(db, business_date=target_date)
+    return {
+        "business_date": target_date.isoformat(),
+        "count": len(items),
+        "items": items,
     }
 
 
@@ -156,10 +297,14 @@ def attendance_team_roster(
     from app.services.business_time import business_date_for_instant
 
     today = business_date_for_instant(now)
+    waived_today_count = attendance_service.count_waived_for_date(db, business_date=today)
     items = []
     for u in roster:
         record = attendance_service.get_record_for_date(db, user_id=u.id, business_date=today)
         config = attendance_service.serialize_user_attendance_config(u)
+        today_record = None
+        if record is not None:
+            today_record = attendance_service.serialize_record(record)
         items.append(
             {
                 "id": str(u.id),
@@ -170,9 +315,10 @@ def attendance_team_roster(
                 "attendance_start_date": config["attendance_start_date"],
                 "today_status": str(record.status) if record else None,
                 "today_signed_in_at": record.signed_in_at.isoformat() if record and record.signed_in_at else None,
+                "today_record": today_record,
             }
         )
-    return {"items": items}
+    return {"items": items, "waived_today_count": waived_today_count, "business_date": today.isoformat()}
 
 
 @router.get("/users/{user_id}")
@@ -219,7 +365,7 @@ def user_attendance_history(
         "page_size": page_size,
         "total": total,
         "summary": summary,
-        "items": [attendance_service.serialize_record(r) for r in rows],
+        "items": attendance_service.enrich_records_with_waived_by(db, rows),
     }
 
 
