@@ -35,6 +35,8 @@ import type { TeamMemberProfile } from "@/lib/ops-types";
 type TeamProfileVM = TeamMemberProfile & {
   reconciliationPosture: ReconciliationPosture;
   monthPosture: MonthPostureData;
+  statsYear?: number;
+  statsMonth?: number;
   monthPayoutBreakdown?: PayoutAttendanceBreakdown;
 };
 
@@ -124,7 +126,10 @@ export default function TeamMemberDetailPage() {
           pendingTotal: Number(monthStats.pending_total ?? 0),
           approvedTotal: Number(monthStats.approved_total ?? 0),
           mismatchIndexes: monthStats.mismatch_indexes ?? [],
+          mismatchIndexLabels: monthStats.mismatch_index_labels ?? [],
         },
+        statsYear: monthStats.year,
+        statsMonth: monthStats.month,
       });
     } catch (e) {
       if (e instanceof ApiError) toast.error(e.message);
@@ -214,6 +219,8 @@ function ManagerTeamMemberBody({
         monthServices={profile.monthStats.services}
         reconciliationPosture={profile.reconciliationPosture}
         monthPosture={profile.monthPosture}
+        statsYear={profile.statsYear}
+        statsMonth={profile.statsMonth}
       />
 
       {profile.role !== "manager" ? (
@@ -345,7 +352,11 @@ function OperationalPostureSection({ profile }: { profile: TeamProfileVM }) {
           indexes for this team member only.
         </p>
       </div>
-      <MonthPostureSummary data={profile.monthPosture} />
+      <MonthPostureSummary
+        data={profile.monthPosture}
+        year={profile.statsYear}
+        month={profile.statsMonth}
+      />
     </section>
   );
 }

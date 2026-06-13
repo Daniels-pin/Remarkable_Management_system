@@ -4,12 +4,14 @@ import * as React from "react";
 import { ChevronDown } from "lucide-react";
 
 import { LedgerVoidBadge } from "@/components/ops/ledger-void-badge";
+import { PaymentMethodAdjustmentHistory } from "@/components/ops/payment-method-adjustment-history";
 import { ReconciliationComparisonBadge } from "@/components/ops/reconciliation-comparison-badge";
 import { Button } from "@/components/ui/button";
 import type { ReconciliationComparisonStatus } from "@/lib/reconciliation-status";
 import { rowHighlightFromComparison } from "@/lib/reconciliation-status";
 import type { ReconciliationWorkspaceRow } from "@/lib/api";
-import { formatNaira, formatTimeLabel, formatTimeShort } from "@/lib/format";
+import { formatCatalogDate, formatNaira, formatTimeLabel, formatTimeShort } from "@/lib/format";
+import { formatLedgerIndexLabel } from "@/lib/ledger-index";
 import { cn } from "@/lib/utils";
 
 const DESKTOP_GRID =
@@ -22,9 +24,12 @@ export type IndexedReconciliationRow = ReconciliationWorkspaceRow & {
 export type ReconciliationViewerSide = "employee" | "manager";
 
 function indexLabel(row: IndexedReconciliationRow): string {
-  return (
-    row.index_label ??
-    (row.index != null ? `#${String(row.index).padStart(3, "0")}` : "—")
+  return formatLedgerIndexLabel(
+    "service",
+    row.index,
+    row.index_label,
+    row.financial_year,
+    row.financial_month,
   );
 }
 
@@ -94,14 +99,29 @@ function SideAudit({
         {payment ? <span className="text-[var(--muted-foreground)]"> · {payment}</span> : null}
       </p>
       <p className="mt-0.5 text-[10px] text-[var(--muted-foreground)]">
-        {formatTimeLabel(side.occurred_at)}
-        {side.business_date ? ` · ${side.business_date}` : ""}
+        Recorded {formatTimeLabel(side.occurred_at)}
+        {side.business_date ? ` · ${formatCatalogDate(side.business_date)}` : ""}
       </p>
+      {side.approved_at ? (
+        <p className="mt-1 text-[10px] text-emerald-700 dark:text-emerald-300">
+          Reconciled {formatTimeLabel(side.approved_at)}
+        </p>
+      ) : null}
       {side.note?.trim() ? (
         <p className="mt-1 text-xs text-[var(--muted-foreground)]">{side.note}</p>
       ) : null}
     </AuditField>
   );
+}
+
+function isCorrectableMatchedService(
+  row: IndexedReconciliationRow,
+  canCorrect?: boolean,
+): boolean {
+  if (!canCorrect) return false;
+  if (row.comparison_status !== "matched") return false;
+  const method = row.manager?.payment_method ?? row.payment_method;
+  return method === "cash" || method === "transfer" || method === "pos";
 }
 
 function ReconciliationRow({
@@ -111,6 +131,8 @@ function ReconciliationRow({
   leftLabel,
   rightLabel,
   onVoidRequest,
+  canCorrectPaymentMethod,
+  onCorrectPaymentMethod,
 }: {
   row: IndexedReconciliationRow;
   showBusinessDate: boolean;
@@ -118,6 +140,8 @@ function ReconciliationRow({
   leftLabel: string;
   rightLabel: string;
   onVoidRequest?: (row: IndexedReconciliationRow) => void;
+  canCorrectPaymentMethod?: boolean;
+  onCorrectPaymentMethod?: (row: IndexedReconciliationRow) => void;
 }) {
   const [expanded, setExpanded] = React.useState(false);
   const status = row.comparison_status as ReconciliationComparisonStatus;
@@ -160,6 +184,9 @@ function ReconciliationRow({
     row.employee_entry_id &&
     !employeeVoided &&
     status !== "pending_delete_confirmation";
+  const canCorrect =
+    isCorrectableMatchedService(row, canCorrectPaymentMethod) &&
+    Boolean(row.manager_entry_id && onCorrectPaymentMethod);
 
   return (
     <li
@@ -255,6 +282,16 @@ function ReconciliationRow({
               <p className="mt-1 capitalize text-[var(--muted-foreground)]">
                 {row.reconciliation_status?.replace(/_/g, " ") ?? "—"}
               </p>
+              {row.business_date ? (
+                <p className="mt-1 text-[10px] text-[var(--muted-foreground)]">
+                  Transaction day {formatCatalogDate(row.business_date)}
+                </p>
+              ) : null}
+              {row.reconciled_at ? (
+                <p className="mt-1 text-[10px] text-emerald-700 dark:text-emerald-300">
+                  Reconciled {formatTimeLabel(row.reconciled_at)}
+                </p>
+              ) : null}
               {row.employee?.is_voided || row.employee?.pending_void_reason ? (
                 <div className="mt-2">
                   <LedgerVoidBadge
@@ -270,6 +307,15 @@ function ReconciliationRow({
           </div>
           {canVoidEmployee ? (
             <VoidActionBlock onVoid={() => onVoidRequest?.(row)} />
+          ) : null}
+          {canCorrect ? (
+            <CorrectPaymentMethodBlock onCorrect={() => onCorrectPaymentMethod?.(row)} />
+          ) : null}
+          {row.payment_method_adjustments?.length ? (
+            <PaymentMethodAdjustmentHistory
+              adjustments={row.payment_method_adjustments}
+              className="mt-3 border-t border-[var(--border)]/50 pt-3"
+            />
           ) : null}
           <p className="mt-2 font-mono text-[10px] text-[var(--muted-foreground)]">
             {row.employee_entry_id ? `E:${row.employee_entry_id}` : ""}
@@ -301,6 +347,25 @@ function VoidActionBlock({ onVoid }: { onVoid: () => void }) {
   );
 }
 
+function CorrectPaymentMethodBlock({ onCorrect }: { onCorrect: () => void }) {
+  return (
+    <div className="mt-3 border-t border-[var(--border)]/50 pt-2">
+      <Button
+        type="button"
+        size="sm"
+        variant="outline"
+        className="rounded-full border-dashed text-xs"
+        onClick={(e) => {
+          e.stopPropagation();
+          onCorrect();
+        }}
+      >
+        Correct payment method
+      </Button>
+    </div>
+  );
+}
+
 export function IndexedReconciliationTable({
   rows,
   loading,
@@ -311,6 +376,8 @@ export function IndexedReconciliationTable({
   emptyTitle = "No service entries",
   emptyBody = "Indexed reconciliation rows appear here as services are recorded and reviewed.",
   onVoidRequest,
+  canCorrectPaymentMethod,
+  onCorrectPaymentMethod,
 }: {
   rows: IndexedReconciliationRow[];
   loading: boolean;
@@ -322,6 +389,8 @@ export function IndexedReconciliationTable({
   emptyTitle?: string;
   emptyBody?: string;
   onVoidRequest?: (row: IndexedReconciliationRow) => void;
+  canCorrectPaymentMethod?: boolean;
+  onCorrectPaymentMethod?: (row: IndexedReconciliationRow) => void;
 }) {
   const leftLabel = primarySide === "employee" ? employeeColumnLabel : managerColumnLabel;
   const rightLabel = primarySide === "employee" ? managerColumnLabel : employeeColumnLabel;
@@ -365,6 +434,8 @@ export function IndexedReconciliationTable({
                 leftLabel={leftLabel}
                 rightLabel={rightLabel}
                 onVoidRequest={onVoidRequest}
+                canCorrectPaymentMethod={canCorrectPaymentMethod}
+                onCorrectPaymentMethod={onCorrectPaymentMethod}
               />
             ))}
           </ul>

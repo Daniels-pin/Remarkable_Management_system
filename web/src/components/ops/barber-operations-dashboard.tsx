@@ -22,6 +22,7 @@ import {
   type BarberLedgerServiceRow,
 } from "@/lib/api";
 import { formatNaira, formatTimeLabel } from "@/lib/format";
+import { formatLedgerIndexLabel } from "@/lib/ledger-index";
 import { subscribePayoutUpdated } from "@/lib/payout-events";
 import { subscribeReconciliationUpdated } from "@/lib/reconciliation-events";
 import { normalizePayoutBreakdown, resolveActualPayout } from "@/lib/payout";
@@ -40,7 +41,7 @@ function LedgerRow({ t }: { t: LedgerTransaction }) {
   return (
     <li className="flex items-center gap-3 border-b border-[var(--border)]/70 px-3 py-1.5 last:border-b-0">
       <span className="shrink-0 font-mono text-[11px] font-medium tabular-nums text-[var(--muted-foreground)]">
-        #{String(t.index).padStart(3, "0")}
+        {formatLedgerIndexLabel("service", t.index, t.indexLabel)}
       </span>
       <div className="min-w-0 flex-1">
         <p className="truncate text-xs font-medium text-[var(--foreground)]">
@@ -78,6 +79,7 @@ function mapServiceRow(r: BarberLedgerServiceRow, serviceNames: Map<string, stri
   return {
     id: r.id,
     index: r.barber_sequence_index ?? 0,
+    indexLabel: r.index_label ?? undefined,
     type: "service",
     employeeName: null,
     employeeId: null,
@@ -108,7 +110,11 @@ export function BarberOperationsDashboard() {
     pendingTotal: 0,
     approvedTotal: 0,
     mismatchIndexes: [] as number[],
+    mismatchIndexLabels: [] as string[],
   });
+  const [dashboardMonth, setDashboardMonth] = React.useState<{ year: number; month: number } | null>(
+    null,
+  );
   const [payoutBreakdown, setPayoutBreakdown] = React.useState({
     expectedPayout: 0,
     actualPayout: 0,
@@ -156,7 +162,9 @@ export function BarberOperationsDashboard() {
         pendingTotal: Number(s.pending_total ?? 0),
         approvedTotal: Number(s.approved_total ?? 0),
         mismatchIndexes: s.mismatch_indexes ?? [],
+        mismatchIndexLabels: s.mismatch_index_labels ?? [],
       });
+      setDashboardMonth({ year: s.year, month: s.month });
       setPayoutBreakdown(
         normalizePayoutBreakdown({
           expectedPayout: expected,
@@ -304,7 +312,12 @@ export function BarberOperationsDashboard() {
                 indexes.
               </p>
             </div>
-            <MonthPostureSummary data={monthPosture} pendingIndexCount={pendingCount} />
+            <MonthPostureSummary
+              data={monthPosture}
+              pendingIndexCount={pendingCount}
+              year={dashboardMonth?.year}
+              month={dashboardMonth?.month}
+            />
           </section>
 
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-6">

@@ -15,6 +15,7 @@ from app.models.commission import MonthlyCommissionStatement
 from app.models.financial_month import FinancialMonth, MonthReopenEvent
 from app.models.financial_month_snapshot import FinancialMonthSnapshot
 from app.models.ledger import LedgerEntry
+from app.models.ledger_payment_method_adjustment import LedgerPaymentMethodAdjustment
 from app.models.reconciliation_timeline import ReconciliationTimelineEvent
 from app.models.user import User, UserProfile, UserSession
 
@@ -33,6 +34,7 @@ __all__ = [
     "FinancialMonth",
     "FinancialMonthSnapshot",
     "LedgerEntry",
+    "LedgerPaymentMethodAdjustment",
     "MonthlyCommissionStatement",
     "MonthReopenEvent",
     "ReconciliationTimelineEvent",

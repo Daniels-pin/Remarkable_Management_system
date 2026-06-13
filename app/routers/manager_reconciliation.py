@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.core.deps import ActorContext, get_db, get_manager_or_admin_actor
 from app.models.barber_daily_summary import BarberDailySummary
+from app.models.enums import LedgerEntryType
 from app.models.reconciliation_timeline import ReconciliationTimelineEvent
 from app.models.user import User
 from app.schemas.operations import (
@@ -21,6 +22,18 @@ from app.schemas.operations import (
 from app.services import ledger_service, reconciliation_service
 
 router = APIRouter(prefix="/manager/reconciliation", tags=["manager-reconciliation"])
+
+
+def _pending_index_label(row, financial_months: dict) -> str | None:
+    if not row.barber_sequence_index:
+        return None
+    fm = financial_months.get(row.financial_month_id)
+    return ledger_service.format_ledger_index_label(
+        LedgerEntryType.SERVICE,
+        row.barber_sequence_index,
+        year=fm.year if fm else None,
+        month=fm.month if fm else None,
+    )
 
 
 def _ledger_row(e) -> dict:
@@ -140,15 +153,16 @@ def pending_reconciliation_indexes(
     if type_ids:
         for st in db.query(ServiceType).filter(ServiceType.id.in_(type_ids)).all():
             names[st.id] = st.name
+    financial_months = ledger_service.load_financial_months_map(
+        db, {r.financial_month_id for r in rows}
+    )
     return {
         "business_date": business_day.isoformat(),
         "items": [
             {
                 "entry_id": str(r.id),
                 "barber_sequence_index": r.barber_sequence_index,
-                "index_label": f"#{r.barber_sequence_index:03d}"
-                if r.barber_sequence_index
-                else None,
+                "index_label": _pending_index_label(r, financial_months),
                 "service_type_id": str(r.service_type_id) if r.service_type_id else None,
                 "service_name": names.get(r.service_type_id) if r.service_type_id else "Service",
                 "employee_amount": str(r.original_barber_amount or r.amount),

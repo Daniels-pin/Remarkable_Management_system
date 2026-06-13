@@ -107,6 +107,7 @@ def _month_stats_payload(
         "pending_total": str(buckets["pending_total"]),
         "approved_total": str(buckets["approved_total"]),
         "mismatch_indexes": buckets["mismatch_indexes"],
+        "mismatch_index_labels": buckets["mismatch_index_labels"],
         "reconciliation_posture": _posture_label(buckets),
     }
     absences_synced = 0

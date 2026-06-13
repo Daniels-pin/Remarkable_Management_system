@@ -18,7 +18,7 @@ from app.schemas.inventory import (
     StockAdjustBody,
     StockInBody,
 )
-from app.services import inventory_service
+from app.services import inventory_service, ledger_service
 from app.services.business_time import shop_tz
 from app.services.operations_analytics_service import snapshot_time_bounds
 
@@ -178,9 +178,7 @@ def record_product_sale(
     product = inventory_service.get_product(db, sale_row.product_id)
     return {
         "ledger_entry_id": str(ledger_row.id),
-        "index_label": f"S-{ledger_row.barber_sequence_index:03d}"
-        if ledger_row.barber_sequence_index
-        else None,
+        "index_label": ledger_service.index_label_for_entry(db, ledger_row),
         "amount": str(ledger_row.amount),
         "product_sale": {
             "id": str(sale_row.id),

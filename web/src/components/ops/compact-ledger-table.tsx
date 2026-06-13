@@ -4,12 +4,13 @@ import * as React from "react";
 import { ChevronDown } from "lucide-react";
 
 import { LedgerVoidBadge } from "@/components/ops/ledger-void-badge";
+import { PaymentMethodAdjustmentHistory } from "@/components/ops/payment-method-adjustment-history";
 import { ReconciliationComparisonBadge } from "@/components/ops/reconciliation-comparison-badge";
 import { ReconciliationReviewDialog } from "@/components/ops/reconciliation-review-dialog";
 import { StatusBadge } from "@/components/ops/status-badge";
 import { Button } from "@/components/ui/button";
 import { formatExpensePaymentSource } from "@/lib/expense-payment";
-import { formatNaira, formatTimeLabel, formatTimeShort } from "@/lib/format";
+import { formatCatalogDate, formatNaira, formatTimeLabel, formatTimeShort } from "@/lib/format";
 import { formatLedgerIndexLabel } from "@/lib/ledger-index";
 import type { LedgerTransaction } from "@/lib/ops-types";
 import type { ReconciliationComparisonStatus } from "@/lib/reconciliation-status";
@@ -49,11 +50,13 @@ function CompactLedgerRow({
   onReview,
   onVoid,
   onEdit,
+  onCorrectPaymentMethod,
 }: {
   row: LedgerTransaction;
   onReview: (t: LedgerTransaction) => void;
   onVoid?: (t: LedgerTransaction) => void;
   onEdit?: (t: LedgerTransaction) => void;
+  onCorrectPaymentMethod?: (t: LedgerTransaction) => void;
 }) {
   const [expanded, setExpanded] = React.useState(false);
   const label = typeLabel(row);
@@ -62,6 +65,15 @@ function CompactLedgerRow({
   const comparisonStatus = row.comparisonStatus as ReconciliationComparisonStatus | undefined;
   const voided = row.isVoided || row.recordLifecycle === "deleted";
   const showActions = !voided && !row.pendingVoidReason && (onVoid || onEdit);
+  const canCorrectPayment =
+    !voided &&
+    !row.pendingVoidReason &&
+    row.type === "service" &&
+    row.comparisonStatus === "matched" &&
+    (row.paymentMethod === "cash" ||
+      row.paymentMethod === "transfer" ||
+      row.paymentMethod === "pos") &&
+    Boolean(onCorrectPaymentMethod);
 
   const toggle = () => setExpanded((v) => !v);
 
@@ -177,8 +189,14 @@ function CompactLedgerRow({
                 {row.employeeName ?? "House"}
               </p>
               <p className="mt-0.5 text-[10px] text-[var(--muted-foreground)]">
-                {formatTimeLabel(row.createdAt)}
+                Recorded {formatTimeLabel(row.createdAt)}
+                {row.businessDate ? ` · ${formatCatalogDate(row.businessDate)}` : ""}
               </p>
+              {row.reconciledAt ? (
+                <p className="mt-1 text-[10px] text-emerald-700 dark:text-emerald-300">
+                  Reconciled {formatTimeLabel(row.reconciledAt)}
+                </p>
+              ) : null}
               {row.previousAmount != null ? (
                 <p className="mt-1 text-xs text-[var(--muted-foreground)]">
                   Edited from{" "}
@@ -235,6 +253,30 @@ function CompactLedgerRow({
 
           {showActions ? (
             <RowActionsBlock row={row} onEdit={onEdit} onVoid={onVoid} />
+          ) : null}
+
+          {canCorrectPayment ? (
+            <div className="mt-3 border-t border-[var(--border)]/50 pt-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="rounded-full border-dashed text-xs"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onCorrectPaymentMethod?.(row);
+                }}
+              >
+                Correct payment method
+              </Button>
+            </div>
+          ) : null}
+
+          {row.paymentMethodAdjustments?.length ? (
+            <PaymentMethodAdjustmentHistory
+              adjustments={row.paymentMethodAdjustments}
+              className="mt-3 border-t border-[var(--border)]/50 pt-3"
+            />
           ) : null}
 
           <p className="mt-2 font-mono text-[10px] text-[var(--muted-foreground)]">ID:{row.id}</p>
@@ -318,6 +360,7 @@ export function CompactLedgerTable({
   onReconciliationAccept,
   onVoid,
   onEdit,
+  onCorrectPaymentMethod,
 }: {
   rows: LedgerTransaction[];
   loading: boolean;
@@ -326,6 +369,7 @@ export function CompactLedgerTable({
   onReconciliationAccept?: (id: string) => void;
   onVoid?: (row: LedgerTransaction) => void;
   onEdit?: (row: LedgerTransaction) => void;
+  onCorrectPaymentMethod?: (row: LedgerTransaction) => void;
 }) {
   const [review, setReview] = React.useState<LedgerTransaction | null>(null);
 
@@ -367,6 +411,7 @@ export function CompactLedgerTable({
                   onReview={setReview}
                   onVoid={onVoid}
                   onEdit={onEdit}
+                  onCorrectPaymentMethod={onCorrectPaymentMethod}
                 />
               ))}
             </ul>

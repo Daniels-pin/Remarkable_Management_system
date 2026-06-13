@@ -4,6 +4,7 @@ import * as React from "react";
 
 import { Button } from "@/components/ui/button";
 import { formatNaira } from "@/lib/format";
+import { formatLedgerIndexLabel } from "@/lib/ledger-index";
 import {
   acceptBarberPendingVoid,
   type PendingVoidRequest,
@@ -50,7 +51,7 @@ export function PendingVoidReview({ items, onResolved }: PendingVoidReviewProps)
           >
             <div className="min-w-0">
               <p className="font-mono text-[11px] text-[var(--muted-foreground)]">
-                {item.index_label ?? `#${String(item.index).padStart(3, "0")}`}
+                {formatLedgerIndexLabel("service", item.index, item.index_label)}
               </p>
               <p className="text-sm font-medium text-[var(--foreground)]">
                 {item.service_name}{" "}

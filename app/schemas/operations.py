@@ -77,6 +77,11 @@ class LedgerEntryUpdateBody(BaseModel):
     note: str | None = None
 
 
+class PaymentMethodCorrectionBody(BaseModel):
+    new_payment_method: PaymentMethod
+    reason: str = Field(..., min_length=1)
+
+
 class CommissionMarkPaidBody(BaseModel):
     payment_date: datetime
     paid_by_label: str = Field(..., min_length=1)

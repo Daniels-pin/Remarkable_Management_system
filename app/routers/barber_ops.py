@@ -52,7 +52,7 @@ def _indexed_reconciliation_row(
         "id": str(e.id),
         "index": e.barber_sequence_index,
         "barber_sequence_index": e.barber_sequence_index,
-        "index_label": f"#{e.barber_sequence_index:03d}" if e.barber_sequence_index else None,
+        "index_label": ledger_service.index_label_for_entry(db, e) if e.barber_sequence_index else None,
         "occurred_at": e.occurred_at.isoformat(),
         "business_date": e.business_date.isoformat() if e.business_date else None,
         "service_type_id": str(e.service_type_id) if e.service_type_id else None,
@@ -114,6 +114,7 @@ def barber_dashboard(
         "pending_total": str(buckets["pending_total"]),
         "approved_total": str(buckets["approved_total"]),
         "mismatch_indexes": buckets["mismatch_indexes"],
+        "mismatch_index_labels": buckets["mismatch_index_labels"],
         **payout,
         "used_shop_timezone": str(shop_tz()),
     }
@@ -168,6 +169,32 @@ def barber_reconciliation_workspace(
         "page_size": page_size,
         "total": total,
         "daily_summary_status": str(summary.status),
+        "items": items,
+    }
+
+
+@router.get("/reconciliation/inbox")
+def barber_reconciliation_inbox(
+    filter: str,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+    actor: ActorContext = Depends(get_service_provider_actor),
+) -> dict:
+    """Employee-scoped pending/mismatch inbox — not filtered by business day."""
+    normalized_filter = filter.split(":", 1)[0].strip()
+    items, total = ledger_service.list_reconciliation_inbox(
+        db,
+        inbox_filter=normalized_filter,
+        barber_user_id=actor.user.id,
+        page=page,
+        page_size=page_size,
+    )
+    return {
+        "filter": normalized_filter,
+        "page": page,
+        "page_size": page_size,
+        "total": total,
         "items": items,
     }
 

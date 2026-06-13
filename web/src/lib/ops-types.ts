@@ -13,6 +13,16 @@ export type PaymentMethod = "cash" | "card" | "transfer" | "pos";
 export type ExpensePaymentSource = "cash_shop" | "admin_transfer";
 export type LedgerPaymentMethod = PaymentMethod | ExpensePaymentSource;
 
+export type PaymentMethodAdjustment = {
+  id: string;
+  original_method: "cash" | "transfer" | "pos";
+  new_method: "cash" | "transfer" | "pos";
+  corrected_by_user_id: string;
+  corrected_by_label: string | null;
+  reason: string;
+  created_at: string;
+};
+
 export type LedgerTransaction = {
   id: string;
   index: number;
@@ -25,6 +35,9 @@ export type LedgerTransaction = {
   note: string | null;
   status: TransactionStatus;
   createdAt: string;
+  businessDate?: string | null;
+  reconciledAt?: string | null;
+  approvedAt?: string | null;
   serviceType?: string;
   saleCategory?: string;
   expenseCategory?: string;
@@ -44,6 +57,7 @@ export type LedgerTransaction = {
   pendingVoidByLabel?: string | null;
   canEdit?: boolean;
   canVoid?: boolean;
+  paymentMethodAdjustments?: PaymentMethodAdjustment[];
 };
 
 export type ExpenseSourceBreakdown = {

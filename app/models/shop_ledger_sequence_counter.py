@@ -11,7 +11,7 @@ from app.models.enums import LedgerEntryType
 
 
 class ShopLedgerSequenceCounter(Base):
-    """Global per-month index allocator for sales (S-001) and expenses (E-001)."""
+    """Global per-month index allocator for sales (S-JUN26-001) and expenses (E-JUN26-001)."""
 
     __tablename__ = "shop_ledger_sequence_counters"
 

@@ -21,6 +21,8 @@ export type ManagerTeamMemberSummaryProps = {
   monthServices: number;
   reconciliationPosture: ReconciliationPosture;
   monthPosture: MonthPostureData;
+  statsYear?: number;
+  statsMonth?: number;
 };
 
 export function ManagerTeamMemberSummary({
@@ -33,6 +35,8 @@ export function ManagerTeamMemberSummary({
   monthServices,
   reconciliationPosture,
   monthPosture,
+  statsYear,
+  statsMonth,
 }: ManagerTeamMemberSummaryProps) {
   return (
     <div className="rounded-[var(--radius-xl)] border border-[var(--border)] bg-[var(--card)] p-6 shadow-[var(--shadow-card)]">
@@ -83,7 +87,11 @@ export function ManagerTeamMemberSummary({
                 <p className="text-[11px] font-medium uppercase tracking-[0.12em] text-[var(--muted-foreground)]">
                   Financial summary
                 </p>
-                <MonthPostureSummary data={monthPosture} />
+                <MonthPostureSummary
+                  data={monthPosture}
+                  year={statsYear}
+                  month={statsMonth}
+                />
               </div>
             </>
           ) : (

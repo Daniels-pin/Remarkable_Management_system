@@ -6,11 +6,17 @@ import { AddEntryFab, type EntryKind } from "@/components/ops/add-entry-fab";
 import { RecordServiceFab } from "@/components/ops/record-service-fab";
 import { useAuth } from "@/components/providers/auth-provider";
 import { CompactLedgerTable } from "@/components/ops/compact-ledger-table";
+import { DayLedgerSummary } from "@/components/ops/day-ledger-summary";
+import { LedgerDateControls } from "@/components/ops/ledger-date-controls";
 import { PendingVoidReview } from "@/components/ops/pending-void-review";
 import {
   LedgerEntryEditDialog,
   type LedgerEditTarget,
 } from "@/components/ops/ledger-entry-edit-dialog";
+import {
+  PaymentMethodCorrectionDialog,
+  type PaymentMethodCorrectionTarget,
+} from "@/components/ops/payment-method-correction-dialog";
 import {
   VoidConfirmDialog,
   type VoidConfirmContext,
@@ -20,8 +26,6 @@ import { useOpsNotifications } from "@/components/ops/ops-notifications-context"
 import { useReconciliationCounts } from "@/components/ops/reconciliation-counts-context";
 import { Button } from "@/components/ui/button";
 import { OperationalAlertBadge } from "@/components/ui/operational-alert-badge";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { IndexedReconciliationTable } from "@/components/ops/indexed-reconciliation-table";
 import { OperationalHistorySection } from "@/components/ops/operational-history-section";
 import {
@@ -30,9 +34,6 @@ import {
   PendingMatchSheet,
   ReconciliationInboxTable,
 } from "@/components/ops/reconciliation-inbox";
-import {
-  matchesReconciliationInboxFilter,
-} from "@/lib/reconciliation-status";
 import { OPERATIONAL_HISTORY_PAGE_SIZE } from "@/components/ops/ledger-month-controls";
 import {
   ApiError,
@@ -40,6 +41,7 @@ import {
   getBarberReconciliationWorkspace,
   listBarbershopLedger,
   listBarberPendingVoids,
+  listBarberReconciliationInbox,
   listReconciliationInbox,
   patchBarberServiceEntry,
   patchBarbershopLedgerEntry,
@@ -55,6 +57,7 @@ import { isManagerUp, isServiceProvider } from "@/lib/roles";
 import { dispatchReconciliationUpdated } from "@/lib/reconciliation-events";
 import type { LedgerEntryType, LedgerTransaction } from "@/lib/ops-types";
 import { resolveTransactionStatus } from "@/lib/reconciliation-status";
+import { correctionTargetFromLedgerTransaction } from "@/lib/payment-method-correction";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
@@ -95,25 +98,76 @@ function matchesManagerFilter(row: LedgerTransaction, f: ManagerFilter) {
   return row.type === f;
 }
 
-function filterWorkspaceRows(rows: ReconciliationWorkspaceRow[], f: ProviderFilter) {
-  if (f === "service") return rows;
-  return rows.filter((r) =>
-    matchesReconciliationInboxFilter(r.comparison_status, f, "employee"),
-  );
-}
-
 function notifyReconciliationChanged() {
   dispatchReconciliationUpdated();
+}
+
+const MANAGER_PAGE_SIZE = 50;
+const INBOX_PAGE_SIZE = 50;
+
+function LedgerPagination({
+  page,
+  totalPages,
+  total,
+  onPrev,
+  onNext,
+  noun = "records",
+}: {
+  page: number;
+  totalPages: number;
+  total: number;
+  onPrev: () => void;
+  onNext: () => void;
+  noun?: string;
+}) {
+  if (totalPages <= 1) return null;
+  return (
+    <div className="mt-4 flex items-center justify-between gap-3">
+      <p className="text-xs text-[var(--muted-foreground)]">
+        {total} {total === 1 ? noun.replace(/s$/, "") : noun} · page {page} of {totalPages}
+      </p>
+      <div className="flex gap-2">
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="rounded-full"
+          disabled={page <= 1}
+          onClick={onPrev}
+        >
+          Previous
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="rounded-full"
+          disabled={page >= totalPages}
+          onClick={onNext}
+        >
+          Next
+        </Button>
+      </div>
+    </div>
+  );
 }
 
 function emptyLedgerCopy(
   filter: ManagerFilter | ProviderFilter,
   role: "manager" | "provider",
+  opts: { viewingToday: boolean },
 ): { title: string; body: string; showEntryAction: boolean } {
   switch (filter) {
     case "service":
       return {
-        title: role === "provider" ? "No services recorded for this day" : "No services recorded yet",
+        title:
+          role === "provider"
+            ? opts.viewingToday
+              ? "No services recorded today"
+              : "No services recorded for this day"
+            : opts.viewingToday
+              ? "No services recorded today"
+              : "No services recorded for this day",
         body:
           role === "provider"
             ? "Record a service to open your employee index."
@@ -122,13 +176,13 @@ function emptyLedgerCopy(
       };
     case "sale":
       return {
-        title: "No sales recorded yet",
+        title: opts.viewingToday ? "No sales recorded today" : "No sales recorded for this day",
         body: "Capture retail or product sales here when the lane is active.",
         showEntryAction: true,
       };
     case "expense":
       return {
-        title: "No expenses recorded yet",
+        title: opts.viewingToday ? "No expenses recorded today" : "No expenses recorded for this day",
         body: "Log shop expenses here to keep the ledger complete.",
         showEntryAction: true,
       };
@@ -146,8 +200,12 @@ function emptyLedgerCopy(
       };
     default:
       return {
-        title: "No transactions recorded yet",
-        body: "The ledger stays empty until services, sales, and expenses are posted.",
+        title: opts.viewingToday
+          ? "No transactions recorded today"
+          : "No transactions recorded",
+        body: opts.viewingToday
+          ? "This is expected — records appear here as services, sales, and expenses are posted."
+          : "Nothing was posted on this business day.",
         showEntryAction: false,
       };
   }
@@ -208,28 +266,67 @@ function ProviderDailyLedger() {
   const { pendingCount, mismatchCount, refreshCounts } = useReconciliationCounts();
   const [businessDate, setBusinessDate] = React.useState(today);
   const [dayRows, setDayRows] = React.useState<ReconciliationWorkspaceRow[]>([]);
+  const [inboxRows, setInboxRows] = React.useState<ReconciliationWorkspaceRow[]>([]);
+  const [dayTotal, setDayTotal] = React.useState(0);
+  const [inboxTotal, setInboxTotal] = React.useState(0);
+  const [dayPage, setDayPage] = React.useState(1);
+  const [inboxPage, setInboxPage] = React.useState(1);
   const [dayLoading, setDayLoading] = React.useState(true);
+  const [inboxLoading, setInboxLoading] = React.useState(false);
   const [canRecord, setCanRecord] = React.useState(true);
   const [filter, setFilter] = React.useState<ProviderFilter>("service");
   const [pendingVoids, setPendingVoids] = React.useState<PendingVoidRequest[]>([]);
   const [voidTarget, setVoidTarget] = React.useState<VoidConfirmTarget | null>(null);
   const [voidOpen, setVoidOpen] = React.useState(false);
 
+  const inboxMode = filter === "pending" || filter === "mismatch";
+
   const loadDay = React.useCallback(async () => {
     setDayLoading(true);
     try {
       const res = await getBarberReconciliationWorkspace(
         businessDate,
-        1,
+        dayPage,
         OPERATIONAL_HISTORY_PAGE_SIZE,
       );
       setDayRows(res.items);
+      setDayTotal(res.total);
       notifyReconciliationChanged();
     } catch (e) {
       if (e instanceof ApiError) toast.error(e.message);
       setDayRows([]);
+      setDayTotal(0);
     } finally {
       setDayLoading(false);
+    }
+  }, [businessDate, dayPage]);
+
+  const loadInbox = React.useCallback(async () => {
+    if (!inboxMode) return;
+    setInboxLoading(true);
+    try {
+      const res = await listBarberReconciliationInbox(filter, {
+        page: inboxPage,
+        pageSize: INBOX_PAGE_SIZE,
+      });
+      setInboxRows(res.items);
+      setInboxTotal(res.total);
+      notifyReconciliationChanged();
+    } catch (e) {
+      if (e instanceof ApiError) toast.error(e.message);
+      setInboxRows([]);
+      setInboxTotal(0);
+    } finally {
+      setInboxLoading(false);
+    }
+  }, [filter, inboxMode, inboxPage]);
+
+  const loadDayCount = React.useCallback(async () => {
+    try {
+      const res = await getBarberReconciliationWorkspace(businessDate, 1, 1);
+      setDayTotal(res.total);
+    } catch {
+      setDayTotal(0);
     }
   }, [businessDate]);
 
@@ -256,12 +353,22 @@ function ProviderDailyLedger() {
   }, []);
 
   React.useEffect(() => {
+    setDayPage(1);
+    setInboxPage(1);
+  }, [businessDate, filter]);
+
+  React.useEffect(() => {
     queueMicrotask(() => {
-      void loadDay();
+      if (inboxMode) {
+        void loadInbox();
+        void loadDayCount();
+      } else {
+        void loadDay();
+      }
       void loadMonthGate();
       void loadPendingVoids();
     });
-  }, [loadDay, loadMonthGate, loadPendingVoids]);
+  }, [inboxMode, loadDay, loadInbox, loadDayCount, loadMonthGate, loadPendingVoids]);
 
   const requestVoidWorkspaceRow = (row: ReconciliationWorkspaceRow) => {
     const entryId = row.employee_entry_id ?? row.employee?.id;
@@ -283,7 +390,8 @@ function ProviderDailyLedger() {
     try {
       await voidBarberServiceEntry(voidTarget.id, reason);
       toast.success("Record voided.");
-      await loadDay();
+      if (inboxMode) await loadInbox();
+      else await loadDay();
       await loadPendingVoids();
       notifyReconciliationChanged();
     } catch (e) {
@@ -292,10 +400,12 @@ function ProviderDailyLedger() {
     }
   };
 
-  const filteredRows = React.useMemo(
-    () => filterWorkspaceRows(dayRows, filter),
-    [dayRows, filter],
-  );
+  const displayRows = inboxMode ? inboxRows : dayRows;
+  const displayLoading = inboxMode ? inboxLoading : dayLoading;
+  const displayTotal = inboxMode ? inboxTotal : dayTotal;
+  const displayPage = inboxMode ? inboxPage : dayPage;
+  const pageSize = inboxMode ? INBOX_PAGE_SIZE : OPERATIONAL_HISTORY_PAGE_SIZE;
+  const totalPages = Math.max(1, Math.ceil(displayTotal / pageSize));
 
   const inboxCounts = React.useMemo(
     () => ({
@@ -305,20 +415,34 @@ function ProviderDailyLedger() {
     [pendingCount, mismatchCount],
   );
 
-  const emptyCopy = emptyLedgerCopy(filter, "provider");
+  const emptyCopy = emptyLedgerCopy(filter, "provider", { viewingToday: businessDate === today });
+
+  const refreshProvider = () => {
+    if (inboxMode) void loadInbox();
+    else void loadDay();
+    void refreshCounts();
+  };
 
   return (
     <div className="space-y-14">
       <PendingVoidReview
         items={pendingVoids}
         onResolved={() => {
-          void loadDay();
+          refreshProvider();
           void loadPendingVoids();
           notifyReconciliationChanged();
         }}
       />
 
       <section className="space-y-5">
+        <DayLedgerSummary
+          transactionCount={dayTotal}
+          pendingCount={pendingCount}
+          mismatchCount={mismatchCount}
+          businessDate={businessDate}
+          today={today}
+        />
+
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="space-y-1">
             <h3 className="font-[family-name:var(--font-serif)] text-xl font-semibold text-[var(--foreground)]">
@@ -337,36 +461,48 @@ function ProviderDailyLedger() {
           />
         </div>
 
-        <div className="flex flex-wrap items-end gap-3">
-          <div className="space-y-1.5">
-            <Label htmlFor="ledger-day" className="text-xs">
-              Business day
-            </Label>
-            <Input
-              id="ledger-day"
-              type="date"
+        {!inboxMode ? (
+          <div className="flex flex-wrap items-end gap-3">
+            <LedgerDateControls
               value={businessDate}
-              onChange={(e) => setBusinessDate(e.target.value)}
-              className="h-9 w-44"
+              onChange={setBusinessDate}
               disabled={!canRecord}
             />
+            {!canRecord ? (
+              <p className="pb-2 text-xs text-[var(--muted-foreground)]">
+                New entries are limited to the current operational month.
+              </p>
+            ) : null}
           </div>
-          {!canRecord ? (
-            <p className="pb-2 text-xs text-[var(--muted-foreground)]">
-              New entries are limited to the current operational month.
-            </p>
-          ) : null}
-        </div>
+        ) : null}
 
         <IndexedReconciliationTable
-          rows={filteredRows}
-          loading={dayLoading}
+          rows={displayRows}
+          loading={displayLoading}
           primarySide="employee"
           employeeColumnLabel="Your record"
           managerColumnLabel="Manager record"
+          showBusinessDate={inboxMode}
           emptyTitle={emptyCopy.title}
           emptyBody={emptyCopy.body}
-          onVoidRequest={requestVoidWorkspaceRow}
+          onVoidRequest={inboxMode ? undefined : requestVoidWorkspaceRow}
+        />
+
+        <LedgerPagination
+          page={displayPage}
+          totalPages={totalPages}
+          total={displayTotal}
+          noun={inboxMode ? "unresolved records" : "indexed records"}
+          onPrev={() =>
+            inboxMode
+              ? setInboxPage((p) => Math.max(1, p - 1))
+              : setDayPage((p) => Math.max(1, p - 1))
+          }
+          onNext={() =>
+            inboxMode
+              ? setInboxPage((p) => Math.min(totalPages, p + 1))
+              : setDayPage((p) => Math.min(totalPages, p + 1))
+          }
         />
 
         {canRecord && filter === "service" ? (
@@ -374,6 +510,7 @@ function ProviderDailyLedger() {
             key="record-service"
             onCreated={() => {
               void loadDay();
+              void loadDayCount();
               void refreshCounts();
               notifyReconciliationChanged();
             }}
@@ -398,11 +535,17 @@ export function DailyLedgerPanel() {
   const { session } = useAuth();
   const providerView = isServiceProvider(session?.role);
   const canAddEntry = isManagerUp(session?.role);
+  const today = React.useMemo(() => new Date().toISOString().slice(0, 10), []);
 
   const { dismissByTransactionId } = useOpsNotifications();
   const { pendingCount, mismatchCount, refreshCounts } = useReconciliationCounts();
+  const [businessDate, setBusinessDate] = React.useState(today);
   const [rows, setRows] = React.useState<LedgerTransaction[]>([]);
   const [inboxRows, setInboxRows] = React.useState<ReconciliationInboxRow[]>([]);
+  const [transactionTotal, setTransactionTotal] = React.useState(0);
+  const [inboxTotal, setInboxTotal] = React.useState(0);
+  const [page, setPage] = React.useState(1);
+  const [inboxPage, setInboxPage] = React.useState(1);
   const [loading, setLoading] = React.useState(true);
   const [filter, setFilter] = React.useState<ManagerFilter>("all");
   const [selectedPending, setSelectedPending] = React.useState<ReconciliationInboxRow | null>(null);
@@ -412,45 +555,92 @@ export function DailyLedgerPanel() {
   const [voidOpen, setVoidOpen] = React.useState(false);
   const [editTarget, setEditTarget] = React.useState<LedgerEditTarget | null>(null);
   const [editOpen, setEditOpen] = React.useState(false);
+  const [correctionTarget, setCorrectionTarget] =
+    React.useState<PaymentMethodCorrectionTarget | null>(null);
+  const [correctionOpen, setCorrectionOpen] = React.useState(false);
 
   const entryWorkflow = isEntryWorkflowFilter(filter);
   const showManagerEntry = canAddEntry && entryWorkflow;
   const inboxMode = isInboxFilter(filter);
 
+  const loadTransactionCount = React.useCallback(async () => {
+    try {
+      const res = await listBarbershopLedger({
+        businessDate,
+        page: 1,
+        pageSize: 1,
+      });
+      setTransactionTotal(res.total);
+    } catch {
+      setTransactionTotal(0);
+    }
+  }, [businessDate]);
+
   const load = React.useCallback(async () => {
     if (providerView) return;
     setLoading(true);
     try {
-      const [ledgerRes, pendingRes, mismatchRes] = await Promise.all([
-        listBarbershopLedger(),
-        listReconciliationInbox("pending"),
-        listReconciliationInbox("mismatch"),
-      ]);
-      setRows(ledgerRes.items.map(mapLedgerRow));
-      setInboxRows(filter === "pending" ? pendingRes.items : mismatchRes.items);
+      if (inboxMode) {
+        const res = await listReconciliationInbox(filter, {
+          page: inboxPage,
+          pageSize: INBOX_PAGE_SIZE,
+        });
+        setInboxRows(res.items);
+        setInboxTotal(res.total);
+        await loadTransactionCount();
+      } else {
+        const ledgerRes = await listBarbershopLedger({
+          businessDate,
+          page,
+          pageSize: MANAGER_PAGE_SIZE,
+        });
+        setRows(ledgerRes.items.map(mapLedgerRow));
+        setTransactionTotal(ledgerRes.total);
+      }
       notifyReconciliationChanged();
     } catch (e) {
       if (e instanceof ApiError) toast.error(e.message);
       else toast.error("Could not load ledger.");
-      setRows([]);
-      setInboxRows([]);
+      if (inboxMode) {
+        setInboxRows([]);
+        setInboxTotal(0);
+      } else {
+        setRows([]);
+        setTransactionTotal(0);
+      }
     } finally {
       setLoading(false);
     }
-  }, [providerView, filter]);
+  }, [
+    providerView,
+    filter,
+    businessDate,
+    page,
+    inboxPage,
+    inboxMode,
+    loadTransactionCount,
+  ]);
 
   const loadInboxOnly = React.useCallback(async () => {
     try {
-      const res = await listReconciliationInbox(filter as "pending" | "mismatch");
+      const res = await listReconciliationInbox(filter as "pending" | "mismatch", {
+        page: inboxPage,
+        pageSize: INBOX_PAGE_SIZE,
+      });
       setInboxRows(res.items);
-      const ledgerRes = await listBarbershopLedger();
-      setRows(ledgerRes.items.map(mapLedgerRow));
+      setInboxTotal(res.total);
       await refreshCounts();
+      await loadTransactionCount();
       notifyReconciliationChanged();
     } catch (e) {
       if (e instanceof ApiError) toast.error(e.message);
     }
-  }, [filter, refreshCounts]);
+  }, [filter, inboxPage, refreshCounts, loadTransactionCount]);
+
+  React.useEffect(() => {
+    setPage(1);
+    setInboxPage(1);
+  }, [businessDate, filter]);
 
   React.useEffect(() => {
     queueMicrotask(() => {
@@ -466,12 +656,24 @@ export function DailyLedgerPanel() {
 
   const description = providerView
     ? "Your reconciliation workspace — record services, then browse indexed history by month."
-    : "Official operational ledger — automatic matching when both sides align, or manual reconciliation from Pending.";
+    : "Today's operational command center — review the selected day's transactions, then reconcile pending and mismatched indexes.";
 
-  const emptyCopy = emptyLedgerCopy(filter, "manager");
+  const emptyCopy = emptyLedgerCopy(filter, "manager", {
+    viewingToday: businessDate === today,
+  });
   const refresh = () => {
     void load();
     void refreshCounts();
+  };
+
+  const ledgerTotalPages = Math.max(1, Math.ceil(transactionTotal / MANAGER_PAGE_SIZE));
+  const inboxTotalPages = Math.max(1, Math.ceil(inboxTotal / INBOX_PAGE_SIZE));
+
+  const openCorrectionDialog = (row: LedgerTransaction) => {
+    const target = correctionTargetFromLedgerTransaction(row);
+    if (!target) return;
+    setCorrectionTarget(target);
+    setCorrectionOpen(true);
   };
 
   const openEditDialog = (row: LedgerTransaction) => {
@@ -556,7 +758,10 @@ export function DailyLedgerPanel() {
   if (providerView) {
     return (
       <div className="space-y-6">
-        <p className="max-w-xl text-sm leading-relaxed text-[var(--muted-foreground)]">{description}</p>
+        <p className="max-w-xl text-sm leading-relaxed text-[var(--muted-foreground)]">
+          Today&apos;s service workspace — record on your index, then use Pending and Mismatch for
+          all unresolved items regardless of date.
+        </p>
         <ProviderDailyLedger />
       </div>
     );
@@ -564,6 +769,14 @@ export function DailyLedgerPanel() {
 
   return (
     <div className="space-y-8">
+      <DayLedgerSummary
+        transactionCount={transactionTotal}
+        pendingCount={pendingCount}
+        mismatchCount={mismatchCount}
+        businessDate={businessDate}
+        today={today}
+      />
+
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
         <p className="max-w-xl text-sm leading-relaxed text-[var(--muted-foreground)]">{description}</p>
         <FilterChips
@@ -573,6 +786,10 @@ export function DailyLedgerPanel() {
           onChange={setFilter}
         />
       </div>
+
+      {!inboxMode ? (
+        <LedgerDateControls value={businessDate} onChange={setBusinessDate} />
+      ) : null}
 
       {inboxMode ? (
         <>
@@ -586,6 +803,14 @@ export function DailyLedgerPanel() {
               if (filter === "pending") setSelectedPending(row);
               else setSelectedMismatch(row);
             }}
+          />
+          <LedgerPagination
+            page={inboxPage}
+            totalPages={inboxTotalPages}
+            total={inboxTotal}
+            noun="unresolved records"
+            onPrev={() => setInboxPage((p) => Math.max(1, p - 1))}
+            onNext={() => setInboxPage((p) => Math.min(inboxTotalPages, p + 1))}
           />
           {filter === "pending" ? (
             <MatchAllBar
@@ -612,24 +837,35 @@ export function DailyLedgerPanel() {
           ) : null}
         </div>
       ) : (
-        <CompactLedgerTable
-          rows={sorted}
-          loading={loading}
-          emptyTitle={emptyCopy.title}
-          emptyBody={emptyCopy.body}
-          onReconciliationAccept={(id) => {
-            dismissByTransactionId(id);
-            setRows((prev) =>
-              prev.map((r) =>
-                r.id === id ? { ...r, status: "approved" as const, reconciliation: undefined } : r,
-              ),
-            );
-            notifyReconciliationChanged();
-            void refreshCounts();
-          }}
-          onVoid={openVoidDialog}
-          onEdit={openEditDialog}
-        />
+        <>
+          <CompactLedgerTable
+            rows={sorted}
+            loading={loading}
+            emptyTitle={emptyCopy.title}
+            emptyBody={emptyCopy.body}
+            onReconciliationAccept={(id) => {
+              dismissByTransactionId(id);
+              setRows((prev) =>
+                prev.map((r) =>
+                  r.id === id ? { ...r, status: "approved" as const, reconciliation: undefined } : r,
+                ),
+              );
+              notifyReconciliationChanged();
+              void refreshCounts();
+            }}
+            onVoid={openVoidDialog}
+            onEdit={openEditDialog}
+            onCorrectPaymentMethod={openCorrectionDialog}
+          />
+          <LedgerPagination
+            page={page}
+            totalPages={ledgerTotalPages}
+            total={transactionTotal}
+            noun="transactions"
+            onPrev={() => setPage((p) => Math.max(1, p - 1))}
+            onNext={() => setPage((p) => Math.min(ledgerTotalPages, p + 1))}
+          />
+        </>
       )}
 
       {showManagerEntry && entryWorkflow && !inboxMode ? (
@@ -669,6 +905,16 @@ export function DailyLedgerPanel() {
         target={editTarget}
         onSave={confirmEdit}
       />
+
+      <PaymentMethodCorrectionDialog
+        target={correctionTarget}
+        open={correctionOpen}
+        onOpenChange={setCorrectionOpen}
+        onCorrected={() => {
+          refresh();
+          notifyReconciliationChanged();
+        }}
+      />
     </div>
   );
 }
@@ -702,6 +948,9 @@ function mapLedgerRow(r: LedgerRow): LedgerTransaction {
       workflowStatus: r.reconciliation_status,
     }),
     createdAt: r.occurred_at,
+    businessDate: r.business_date,
+    approvedAt: r.approved_at ?? undefined,
+    reconciledAt: r.reconciled_at ?? undefined,
     serviceType: r.service_type?.name ?? undefined,
     saleCategory: r.sale_category?.name ?? undefined,
     expenseCategory: r.expense_category?.name ?? undefined,
@@ -717,5 +966,6 @@ function mapLedgerRow(r: LedgerRow): LedgerTransaction {
     pendingVoidByLabel: r.pending_void_by_label,
     canEdit: !isVoided && r.record_lifecycle === "active" && !r.pending_void_reason,
     canVoid: !isVoided && r.record_lifecycle === "active" && !r.pending_void_reason,
+    paymentMethodAdjustments: r.payment_method_adjustments,
   };
 }

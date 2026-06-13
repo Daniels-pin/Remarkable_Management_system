@@ -5,6 +5,10 @@ import { toast } from "sonner";
 
 import { IndexedReconciliationTable } from "@/components/ops/indexed-reconciliation-table";
 import {
+  PaymentMethodCorrectionDialog,
+  type PaymentMethodCorrectionTarget,
+} from "@/components/ops/payment-method-correction-dialog";
+import {
   LedgerMonthControls,
   OPERATIONAL_HISTORY_PAGE_SIZE,
   type OperationalMonthOption,
@@ -19,6 +23,10 @@ import {
   type ReconciliationWorkspaceRow,
 } from "@/lib/api";
 import { currentYearMonth, monthDisplayLabel, type YearMonth } from "@/lib/ledger-month";
+import { correctionTargetFromWorkspaceRow } from "@/lib/payment-method-correction";
+import { isManagerUp } from "@/lib/roles";
+import { useAuth } from "@/components/providers/auth-provider";
+import { dispatchReconciliationUpdated } from "@/lib/reconciliation-events";
 
 export type OperationalHistoryMode = "self" | "team";
 
@@ -43,6 +51,8 @@ export function OperationalHistorySection({
   subtitle?: string;
   className?: string;
 }) {
+  const { session } = useAuth();
+  const canCorrect = isManagerUp(session?.role);
   const [selectedMonth, setSelectedMonth] = React.useState<YearMonth>(() => currentYearMonth());
   const [archiveMonths, setArchiveMonths] = React.useState<OperationalMonthOption[]>([]);
   const [page, setPage] = React.useState(1);
@@ -51,6 +61,9 @@ export function OperationalHistorySection({
   const [total, setTotal] = React.useState(0);
   const [readOnly, setReadOnly] = React.useState(false);
   const [isCurrentMonth, setIsCurrentMonth] = React.useState(true);
+  const [correctionTarget, setCorrectionTarget] =
+    React.useState<PaymentMethodCorrectionTarget | null>(null);
+  const [correctionOpen, setCorrectionOpen] = React.useState(false);
   const viewerSide = primarySide ?? (mode === "team" ? "manager" : "employee");
 
   const loadMonths = React.useCallback(async () => {
@@ -153,6 +166,23 @@ export function OperationalHistorySection({
             ? "Services you record this month will appear here with index numbers and reconciliation status."
             : "When this employee records services or you add official lines, indexed rows appear here."
         }
+        canCorrectPaymentMethod={canCorrect && mode === "team" && !readOnly}
+        onCorrectPaymentMethod={(row) => {
+          const target = correctionTargetFromWorkspaceRow(row);
+          if (!target) return;
+          setCorrectionTarget(target);
+          setCorrectionOpen(true);
+        }}
+      />
+
+      <PaymentMethodCorrectionDialog
+        target={correctionTarget}
+        open={correctionOpen}
+        onOpenChange={setCorrectionOpen}
+        onCorrected={() => {
+          void loadHistory();
+          dispatchReconciliationUpdated();
+        }}
       />
 
       {total > 0 ? (

@@ -55,3 +55,20 @@ export function formatCatalogDate(iso: string | null | undefined) {
     year: "numeric",
   });
 }
+
+/** Business day label for ledger date controls (e.g. 15 June 2026). */
+export function formatBusinessDayLabel(iso: string) {
+  const d = new Date(`${iso}T12:00:00`);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("en-NG", {
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  });
+}
+
+export function isoDateDaysAgo(days: number) {
+  const d = new Date();
+  d.setDate(d.getDate() - days);
+  return d.toISOString().slice(0, 10);
+}

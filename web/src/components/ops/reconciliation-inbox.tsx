@@ -30,6 +30,7 @@ import {
 } from "@/lib/api";
 import { dispatchReconciliationUpdated } from "@/lib/reconciliation-events";
 import { formatNaira, formatTimeLabel } from "@/lib/format";
+import { formatLedgerIndexLabel } from "@/lib/ledger-index";
 import { cn } from "@/lib/utils";
 
 const PAYMENT_OPTIONS = [
@@ -37,6 +38,16 @@ const PAYMENT_OPTIONS = [
   { value: "transfer" as const, label: "Transfer" },
   { value: "pos" as const, label: "POS" },
 ];
+
+function inboxIndexLabel(row: ReconciliationInboxRow): string {
+  return formatLedgerIndexLabel(
+    "service",
+    row.index,
+    row.index_label,
+    row.financial_year,
+    row.financial_month,
+  );
+}
 
 function PaymentSelect({
   value,
@@ -77,7 +88,7 @@ function InboxRow({
   onSelect: (row: ReconciliationInboxRow) => void;
   showMatchAction?: boolean;
 }) {
-  const indexLabel = row.index_label ?? `#${String(row.index).padStart(3, "0")}`;
+  const indexLabel = inboxIndexLabel(row);
   const amount = row.employee_amount ?? row.manager_amount ?? row.amount;
   const time = row.occurred_at;
   const canMatch =
@@ -230,7 +241,7 @@ export function PendingMatchSheet({
             <div className="space-y-5">
               <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--muted)]/30 p-4">
                 <p className="font-mono text-xs text-[var(--muted-foreground)]">
-                  {row.index_label ?? `#${String(row.index).padStart(3, "0")}`}
+                  {inboxIndexLabel(row)}
                 </p>
                 <p className="mt-1 font-[family-name:var(--font-serif)] text-lg font-semibold text-[var(--foreground)]">
                   {row.service_name}
@@ -344,7 +355,7 @@ export function MismatchDetailSheet({
           <SheetTitle>Amount mismatch</SheetTitle>
           <p className="text-sm text-[var(--muted-foreground)]">
             Side-by-side comparison at index{" "}
-            {row?.index_label ?? (row ? `#${String(row.index).padStart(3, "0")}` : "")}
+            {row ? inboxIndexLabel(row) : ""}
           </p>
         </SheetHeader>
         <div className="mt-4 space-y-5 overflow-y-auto">

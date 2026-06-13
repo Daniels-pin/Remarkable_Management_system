@@ -11,7 +11,7 @@ from app.models.enums import LedgerRecordStream
 
 
 class BarberSequenceCounter(Base):
-    """Per-barber, per-month, per-stream index allocator (#001, #002, …)."""
+    """Per-barber, per-month, per-stream index allocator (JUN26-001, JUN26-002, …)."""
 
     __tablename__ = "barber_sequence_counters"
 

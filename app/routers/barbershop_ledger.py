@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import uuid
+from datetime import date
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
 
 from app.auth.rbac import require_manager_or_admin
@@ -19,6 +20,7 @@ from app.schemas.ledger import (
 )
 from app.schemas.operations import (
     LedgerEntryUpdateBody,
+    PaymentMethodCorrectionBody,
     ReconciliationMatchAllBody,
     ReconciliationMatchBody,
     ReconciliationMismatchResolveBody,
@@ -47,6 +49,7 @@ def _enrich_row(
     r: LedgerEntry,
     *,
     comparison_status: str | None = None,
+    payment_method_adjustments: list[dict] | None = None,
 ) -> dict:
     service = db.get(ServiceType, r.service_type_id) if r.service_type_id else None
     sale = db.get(SaleCategory, r.sale_category_id) if r.sale_category_id else None
@@ -58,6 +61,13 @@ def _enrich_row(
     )
     if comparison_status is None:
         comparison_status = ledger_service.comparison_status_for_service_row(db, r)
+    if payment_method_adjustments is None and (
+        r.entry_type == LedgerEntryType.SERVICE
+        and r.record_stream == LedgerRecordStream.MANAGER
+    ):
+        payment_method_adjustments = ledger_service.payment_method_adjustments_for_entry(db, r.id)
+    elif payment_method_adjustments is None:
+        payment_method_adjustments = []
     return {
         "id": str(r.id),
         "entry_type": str(r.entry_type),
@@ -71,10 +81,14 @@ def _enrich_row(
         "employee_user_id": str(r.employee_user_id) if r.employee_user_id else None,
         "employee_label": _employee_label(db, r.employee_user_id),
         "barber_sequence_index": r.barber_sequence_index,
-        "index_label": ledger_service.format_ledger_index_label(
-            r.entry_type, r.barber_sequence_index
-        ),
+        "index_label": ledger_service.index_label_for_entry(db, r),
         "reconciliation_status": str(r.reconciliation_status) if r.reconciliation_status else None,
+        "approved_at": r.approved_at.isoformat() if r.approved_at else None,
+        "reconciled_at": (
+            r.approved_at.isoformat()
+            if r.approved_at and comparison_status == "matched"
+            else None
+        ),
         "is_manager_created_without_barber": r.is_manager_created_without_barber,
         "service_type": {"id": str(service.id), "name": service.name} if service else None,
         "sale_category": {"id": str(sale.id), "name": sale.name} if sale else None,
@@ -82,11 +96,18 @@ def _enrich_row(
         "record_lifecycle": str(r.record_lifecycle),
         **ledger_service.ledger_entry_void_metadata(db, r),
         "product_sale": inventory_service.enrich_ledger_with_product_sale(db, r),
+        "payment_method_adjustments": payment_method_adjustments,
     }
 
 
 @router.get("")
 def list_ledger(
+    business_date: date | None = Query(
+        None,
+        description="Business day (YYYY-MM-DD). Defaults to today for managers.",
+    ),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
     actor: ActorContext = Depends(get_actor_context),
 ) -> dict:
@@ -108,13 +129,44 @@ def list_ledger(
             .limit(200)
             .all()
         )
+        total = len(rows)
+        resolved_date = business_date
     else:
-        rows = ledger_service.list_manager_official_timeline(db, limit=200)
+        if business_date is None:
+            rows = ledger_service.list_manager_official_timeline(db, limit=200)
+            total = len(rows)
+            resolved_date = None
+        else:
+            resolved_date = business_date
+            rows, total = ledger_service.list_manager_official_timeline_for_day(
+                db,
+                business_day=resolved_date,
+                page=page,
+                page_size=page_size,
+            )
 
     comparison_by_id = ledger_service.comparison_status_map_for_rows(db, rows)
+    manager_service_ids = [
+        r.id
+        for r in rows
+        if r.entry_type == LedgerEntryType.SERVICE
+        and r.record_stream == LedgerRecordStream.MANAGER
+    ]
+    adjustments_by_id = ledger_service.payment_method_adjustments_map_for_entries(
+        db, manager_service_ids
+    )
     return {
+        "business_date": resolved_date.isoformat() if resolved_date else None,
+        "page": page,
+        "page_size": page_size,
+        "total": total,
         "items": [
-            _enrich_row(db, r, comparison_status=comparison_by_id.get(r.id))
+            _enrich_row(
+                db,
+                r,
+                comparison_status=comparison_by_id.get(r.id),
+                payment_method_adjustments=adjustments_by_id.get(r.id, []),
+            )
             for r in rows
         ],
     }
@@ -225,16 +277,27 @@ def create_ledger_entry(
 @router.get("/reconciliation-inbox")
 def reconciliation_inbox(
     filter: str,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
     actor: ActorContext = Depends(get_actor_context),
 ) -> dict:
     """Pending or mismatch service slots for the operational reconciliation inbox."""
     require_manager_or_admin(actor.user)
     normalized_filter = filter.split(":", 1)[0].strip()
-    items = ledger_service.list_reconciliation_inbox(
-        db, inbox_filter=normalized_filter, limit=200
+    items, total = ledger_service.list_reconciliation_inbox(
+        db,
+        inbox_filter=normalized_filter,
+        page=page,
+        page_size=page_size,
     )
-    return {"filter": normalized_filter, "items": items, "total": len(items)}
+    return {
+        "filter": normalized_filter,
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "items": items,
+    }
 
 
 @router.get("/reconciliation-counts")
@@ -300,6 +363,29 @@ def resolve_mismatch(
         "employee": _enrich_row(db, employee_row),
         "manager": _enrich_row(db, mgr_row),
     }
+
+
+@router.post("/{entry_id}/correct-payment-method")
+def correct_payment_method(
+    entry_id: uuid.UUID,
+    body: PaymentMethodCorrectionBody,
+    request: Request,
+    db: Session = Depends(get_db),
+    actor: ActorContext = Depends(get_actor_context),
+) -> dict:
+    require_manager_or_admin(actor.user)
+    row = ledger_service.correct_matched_service_payment_method(
+        db,
+        actor=actor.user,
+        impersonator_id=actor.impersonator.id if actor.impersonator else None,
+        ip_address=request.client.host if request.client else None,
+        entry_id=entry_id,
+        new_payment_method=body.new_payment_method,
+        reason=body.reason,
+    )
+    db.commit()
+    db.refresh(row)
+    return _enrich_row(db, row)
 
 
 @router.patch("/{entry_id}")

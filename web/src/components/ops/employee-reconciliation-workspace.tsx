@@ -5,6 +5,10 @@ import Link from "next/link";
 import { toast } from "sonner";
 
 import { IndexedReconciliationTable } from "@/components/ops/indexed-reconciliation-table";
+import {
+  PaymentMethodCorrectionDialog,
+  type PaymentMethodCorrectionTarget,
+} from "@/components/ops/payment-method-correction-dialog";
 import { OPERATIONAL_HISTORY_PAGE_SIZE } from "@/components/ops/ledger-month-controls";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,6 +18,8 @@ import {
   getDirectoryTeamMemberReconciliationWorkspace,
   type ReconciliationWorkspaceRow,
 } from "@/lib/api";
+import { correctionTargetFromWorkspaceRow } from "@/lib/payment-method-correction";
+import { dispatchReconciliationUpdated } from "@/lib/reconciliation-events";
 
 export function EmployeeReconciliationWorkspace({
   memberId,
@@ -29,6 +35,9 @@ export function EmployeeReconciliationWorkspace({
   const [rows, setRows] = React.useState<ReconciliationWorkspaceRow[]>([]);
   const [total, setTotal] = React.useState(0);
   const [dailyStatus, setDailyStatus] = React.useState<string | null>(null);
+  const [correctionTarget, setCorrectionTarget] =
+    React.useState<PaymentMethodCorrectionTarget | null>(null);
+  const [correctionOpen, setCorrectionOpen] = React.useState(false);
 
   const load = React.useCallback(async () => {
     if (!memberId) return;
@@ -113,6 +122,23 @@ export function EmployeeReconciliationWorkspace({
         managerColumnLabel="Manager record"
         emptyTitle="No entries for this day"
         emptyBody="Services and official lines appear here with compact index rows for side-by-side review."
+        canCorrectPaymentMethod
+        onCorrectPaymentMethod={(row) => {
+          const target = correctionTargetFromWorkspaceRow(row);
+          if (!target) return;
+          setCorrectionTarget(target);
+          setCorrectionOpen(true);
+        }}
+      />
+
+      <PaymentMethodCorrectionDialog
+        target={correctionTarget}
+        open={correctionOpen}
+        onOpenChange={setCorrectionOpen}
+        onCorrected={() => {
+          void load();
+          dispatchReconciliationUpdated();
+        }}
       />
 
       {total > 0 ? (
