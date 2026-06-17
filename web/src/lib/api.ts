@@ -277,15 +277,19 @@ export type FinancialMonthRow = {
 export type OperationsSummaryResponse = {
   total_revenue: string;
   services_revenue: string;
+  service_expenses?: string;
+  service_net_profit?: string;
   product_sales_revenue: string;
   product_cost?: string;
   product_profit?: string;
   inventory_value?: string;
+  low_stock_count?: number;
   total_expenses: string;
   operational_expenses: string;
   rent_expenses?: string;
   payroll_commission: string;
   net_profit: string;
+  total_business_net_profit?: string;
   expense_sources: ExpenseSourcesRow;
   payment_methods: Record<string, string>;
 };
@@ -321,6 +325,18 @@ export type InventoryProductDetail = InventoryProductItem & {
   profit_generated: string;
   units_sold: number;
   stock_movements: InventoryStockMovementItem[];
+  sales_history: InventoryProductSaleHistoryItem[];
+};
+
+export type InventoryProductSaleHistoryItem = {
+  id: string;
+  product_name: string | null;
+  quantity: number;
+  revenue: string;
+  profit: string;
+  recorded_by_user_id: string | null;
+  recorded_by_label: string | null;
+  occurred_at: string | null;
 };
 
 export type InventoryStockMovementItem = {
@@ -347,8 +363,8 @@ export type ProductSaleLedgerMeta = {
   revenue: string;
   cost: string;
   profit: string;
-  sold_by_user_id: string;
-  sold_by_label: string | null;
+  recorded_by_user_id: string | null;
+  recorded_by_label: string | null;
 };
 
 export function listInventoryCategories(options?: { includeInactive?: boolean }) {
@@ -479,6 +495,41 @@ export function getInventorySummary(params?: {
   }>(`/api/v1/barbershop/inventory/summary${q ? `?${q}` : ""}`);
 }
 
+export type InventoryRecorderSalesRow = {
+  recorded_by_user_id: string;
+  recorded_by_label: string | null;
+  revenue: string;
+  cost: string;
+  profit: string;
+  units_sold: number;
+};
+
+/** @deprecated Use InventoryRecorderSalesRow */
+export type InventoryEmployeeSalesRow = InventoryRecorderSalesRow;
+
+export function getInventorySalesByRecorder(params?: {
+  preset?: string;
+  from?: string;
+  to?: string;
+}) {
+  const qs = new URLSearchParams();
+  if (params?.preset) qs.set("preset", params.preset);
+  if (params?.from) qs.set("from", params.from);
+  if (params?.to) qs.set("to", params.to);
+  const q = qs.toString();
+  return apiFetch<{ items: InventoryRecorderSalesRow[] }>(
+    `/api/v1/barbershop/inventory/analytics/by-recorder${q ? `?${q}` : ""}`,
+  );
+}
+
+export function getInventorySalesByEmployee(params?: {
+  preset?: string;
+  from?: string;
+  to?: string;
+}) {
+  return getInventorySalesByRecorder(params);
+}
+
 export function listFinancialMonths() {
   return apiFetch<{ items: FinancialMonthRow[]; note?: string }>("/api/v1/finance/months");
 }
@@ -543,7 +594,8 @@ export type OpsNotificationRow = {
     | "unresolved_mismatch"
     | "reconciliation_review_request"
     | "dispute_requires_manager"
-    | "dispute_requires_admin";
+    | "dispute_requires_admin"
+    | "low_stock";
   title: string;
   body: string | null;
   entity_type: string | null;
@@ -704,6 +756,8 @@ export type LedgerRow = {
   note: string | null;
   employee_user_id: string | null;
   employee_label: string | null;
+  created_by_user_id: string | null;
+  created_by_label: string | null;
   barber_sequence_index: number | null;
   index_label?: string | null;
   reconciliation_status:

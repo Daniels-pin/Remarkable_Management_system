@@ -181,6 +181,8 @@ def financial_snapshot(
         db, start=start, end=end
     )
     tracked_product_revenue = inventory_totals["revenue"]
+    product_cost = inventory_totals["cost"]
+    product_profit = inventory_totals["profit"]
     product_sales = _decimal(
         _active_in_range(db, start, end)
         .filter(LedgerEntry.entry_type == LedgerEntryType.SALE)
@@ -247,9 +249,12 @@ def financial_snapshot(
 
     team_obligations = period_team_payroll_obligations(db, start=start, end=end)
     payroll_commission = team_obligations
-    total_expenses = operational_expenses + rent_expenses + payroll_commission
+    service_expenses = operational_expenses + rent_expenses + payroll_commission
+    total_expenses = service_expenses
     total_revenue = services_revenue + product_sales
-    net_profit = total_revenue - total_expenses
+    service_net_profit = services_revenue - service_expenses
+    total_business_net_profit = service_net_profit + product_profit
+    net_profit = total_business_net_profit
 
     revenue_rows = (
         _active_in_range(db, start, end)
@@ -272,21 +277,24 @@ def financial_snapshot(
             payment_methods[method] += _decimal(row.amount)
 
     inventory_value = inventory_service.inventory_value_total(db)
-    product_cost = inventory_totals["cost"]
-    product_profit = inventory_totals["profit"]
+    low_stock_count = len(inventory_service.low_stock_products(db, limit=500))
 
     return {
         "total_revenue": str(total_revenue),
         "services_revenue": str(services_revenue),
+        "service_expenses": str(service_expenses),
+        "service_net_profit": str(service_net_profit),
         "product_sales_revenue": str(product_sales),
         "product_cost": str(product_cost),
         "product_profit": str(product_profit),
         "inventory_value": str(inventory_value),
+        "low_stock_count": low_stock_count,
         "total_expenses": str(total_expenses),
         "operational_expenses": str(operational_expenses),
         "rent_expenses": str(rent_expenses),
         "payroll_commission": str(payroll_commission),
         "net_profit": str(net_profit),
+        "total_business_net_profit": str(total_business_net_profit),
         "expense_sources": {
             "shop_cash": str(shop_cash_expenses),
             "admin_transfer": str(admin_transfer_expenses),
@@ -312,9 +320,12 @@ def shape_summary_for_role(snapshot: dict, role: UserRole | str) -> dict:
     masked = {
         **snapshot,
         "total_expenses": operational,
+        "service_expenses": operational,
+        "service_net_profit": "0",
         "rent_expenses": "0",
         "payroll_commission": "0",
         "net_profit": "0",
+        "total_business_net_profit": "0",
         "product_cost": "0",
         "product_profit": "0",
         "inventory_value": "0",

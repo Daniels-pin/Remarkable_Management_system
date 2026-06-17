@@ -77,6 +77,8 @@ function kindForType(t: OpsNotificationRow["type"]): NotificationKind {
   switch (t) {
     case "pending_approvals":
       return "approval";
+    case "low_stock":
+      return "inventory";
     case "reconciliation_review_request":
     case "unresolved_mismatch":
       return "reconciliation";
@@ -93,6 +95,8 @@ function mapNotification(n: OpsNotificationRow): OpsNotification {
     n.entity_id && (n.entity_type === "ledger_entry" || n.entity_type === "barber_daily_summary")
       ? n.entity_id
       : undefined;
+  const relatedProductId =
+    n.entity_id && n.entity_type === "inventory_product" ? n.entity_id : undefined;
   return {
     id: n.id,
     kind: kindForType(n.type),
@@ -100,5 +104,6 @@ function mapNotification(n: OpsNotificationRow): OpsNotification {
     body: n.body ?? "",
     createdAt: n.created_at,
     relatedTransactionId,
+    relatedProductId,
   };
 }

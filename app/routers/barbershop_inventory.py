@@ -191,10 +191,27 @@ def record_product_sale(
             "revenue": str(sale_row.revenue),
             "cost": str(sale_row.cost),
             "profit": str(sale_row.profit),
-            "sold_by_user_id": str(sale_row.sold_by_user_id),
-            "sold_by_label": inventory_service._user_label(db, sale_row.sold_by_user_id),
+            "recorded_by_user_id": str(ledger_row.created_by_user_id),
+            "recorded_by_label": inventory_service._recorder_label(
+                db, ledger_row.created_by_user_id
+            ),
         },
     }
+
+
+@router.get("/analytics/by-recorder")
+def sales_by_recorder(
+    preset: str = Query("month"),
+    from_date: date | None = Query(None, alias="from"),
+    to_date: date | None = Query(None, alias="to"),
+    db: Session = Depends(get_db),
+    actor: ActorContext = Depends(get_actor_context),
+) -> dict:
+    _require_inventory_view(actor)
+    start, end = snapshot_time_bounds(
+        db, preset, custom_from=from_date, custom_to=to_date
+    )
+    return {"items": inventory_service.sales_by_recorder_in_range(db, start=start, end=end)}
 
 
 @router.get("/low-stock")
@@ -203,6 +220,8 @@ def low_stock_alerts(
     actor: ActorContext = Depends(get_actor_context),
 ) -> dict:
     _require_inventory_view(actor)
+    inventory_service.reconcile_low_stock_notifications(db)
+    db.commit()
     return {"items": inventory_service.low_stock_products(db)}
 
 

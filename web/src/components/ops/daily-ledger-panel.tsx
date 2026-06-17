@@ -932,11 +932,15 @@ function mapLedgerRow(r: LedgerRow): LedgerTransaction {
       : null;
   const isVoided = r.is_voided ?? r.record_lifecycle === "deleted";
   const prev = r.original_amount ? Number(r.original_amount) : NaN;
+  const ps = r.product_sale;
   return {
     id: r.id,
     index: idx,
     type: r.entry_type,
-    employeeName: r.employee_label,
+    employeeName:
+      r.entry_type === "sale"
+        ? (ps?.recorded_by_label ?? r.created_by_label)
+        : r.employee_label,
     employeeId: r.employee_user_id,
     amount: Number.isFinite(amount) ? amount : 0,
     previousAmount: Number.isFinite(prev) && prev !== amount ? prev : undefined,
@@ -954,6 +958,15 @@ function mapLedgerRow(r: LedgerRow): LedgerTransaction {
     serviceType: r.service_type?.name ?? undefined,
     saleCategory: r.sale_category?.name ?? undefined,
     expenseCategory: r.expense_category?.name ?? undefined,
+    productSale: ps
+      ? {
+          productName: ps.product_name ?? "Product",
+          quantity: ps.quantity,
+          recordedByLabel: ps.recorded_by_label ?? r.created_by_label,
+          unitSellingPrice: Number(ps.unit_selling_price),
+          revenue: Number(ps.revenue),
+        }
+      : undefined,
     reconciliation: undefined,
     comparisonStatus: r.comparison_status ?? undefined,
     indexLabel: r.index_label ?? undefined,

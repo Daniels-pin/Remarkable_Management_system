@@ -249,10 +249,6 @@ export function AddEntryFab({
         toast.error("Pick a product.");
         return;
       }
-      if (!employeeId) {
-        toast.error("Pick who sold this product.");
-        return;
-      }
       const qty = Number(quantity);
       if (!Number.isFinite(qty) || qty <= 0) {
         toast.error("Enter a valid quantity.");
@@ -302,7 +298,6 @@ export function AddEntryFab({
           note: noteValue,
           product_id: productId,
           quantity: qty,
-          sold_by_user_id: employeeId,
           unit_selling_price: useCustomPrice ? unitPrice : undefined,
         });
       } else {
@@ -529,20 +524,6 @@ export function AddEntryFab({
                       onChange={(e) => setQuantity(e.target.value)}
                       required
                     />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label>Sold by</Label>
-                    <select
-                      value={employeeId}
-                      onChange={(e) => setEmployeeId(e.target.value)}
-                      className="flex h-10 w-full rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--input-bg)] px-3 text-sm"
-                    >
-                      {teamMembers.map((em) => (
-                        <option key={em.id} value={em.id}>
-                          {em.name}
-                        </option>
-                      ))}
-                    </select>
                   </div>
                   <label className="flex items-center gap-2 text-sm">
                     <input

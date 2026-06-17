@@ -47,8 +47,8 @@ export function ManagerOperationsDashboard() {
   }, [loadAnalytics]);
 
   const operationalExpenses = current.operationalExpenses || current.totalExpenses;
-  const noActivity =
-    current.totalRevenue === 0 && operationalExpenses === 0;
+  const operationalRevenue = current.servicesRevenue + current.productSalesRevenue;
+  const noActivity = operationalRevenue === 0 && operationalExpenses === 0;
 
   return (
     <div className="space-y-10">
@@ -91,32 +91,33 @@ export function ManagerOperationsDashboard() {
           <span className="text-xs text-[var(--muted-foreground)]">
             {analyticsLoading
               ? "Loading ledger aggregates…"
-              : "Operational totals only — no payroll or profit."}
+              : "Operational totals — inventory profit and payroll stay in admin tools."}
           </span>
         </div>
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <SummaryMetricCard
-            label="Total revenue"
-            value={formatNaira(current.totalRevenue)}
+            label="Operational revenue"
+            value={formatNaira(operationalRevenue)}
             hint={
               noActivity ? "No revenue recorded for this range yet." : "Services and retail combined"
             }
-          />
-          <SummaryMetricCard
-            label="Services revenue"
-            value={formatNaira(current.servicesRevenue)}
-            hint="Core service tickets"
-          />
-          <SummaryMetricCard
-            label="Product sales"
-            value={formatNaira(current.productSalesRevenue)}
-            hint="Retail at chair & desk"
           />
           <SummaryMetricCard
             label="Operational expenses"
             value={formatNaira(operationalExpenses)}
             tone="negative"
             hint="Fuel, supplies, utilities — excludes rent, salary & commission"
+          />
+          <SummaryMetricCard
+            label="Inventory revenue"
+            value={formatNaira(current.productSalesRevenue)}
+            hint="Retail at chair & desk"
+          />
+          <SummaryMetricCard
+            label="Low stock count"
+            value={String(current.lowStockCount)}
+            tone={current.lowStockCount > 0 ? "negative" : "muted"}
+            hint="Products at or below alert threshold"
           />
         </div>
       </section>
@@ -135,7 +136,7 @@ export function ManagerOperationsDashboard() {
                   Cash & payments
                 </p>
                 <p className="mt-1 font-[family-name:var(--font-serif)] text-xl font-semibold text-[var(--foreground)]">
-                  {formatNaira(current.totalRevenue)} revenue
+                  {formatNaira(operationalRevenue)} revenue
                 </p>
               </div>
               <p className="text-sm text-[var(--muted-foreground)]">

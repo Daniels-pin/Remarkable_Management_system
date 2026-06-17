@@ -12,12 +12,14 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.core.exceptions import ConflictError, ForbiddenError, NotFoundError, ValidationAppError
 from app.models.enums import (
+    AppNotificationType,
     InventoryStockMovementType,
     LedgerEntryType,
     RecordLifecycleState,
     ServiceTypeStatus,
     UserRole,
 )
+from app.models.app_notification import AppNotification
 from app.models.inventory import (
     InventoryCategory,
     InventoryProduct,
@@ -35,7 +37,7 @@ from app.schemas.inventory import (
     StockAdjustBody,
     StockInBody,
 )
-from app.services import audit_service
+from app.services import audit_service, notification_service
 from app.services.business_time import business_date_for_instant
 from app.services.financial_month_util import require_financial_month_for_new_entry
 from app.services.ledger_service import allocate_shop_sequence_index
@@ -114,6 +116,26 @@ def _user_label(db: Session, user_id: uuid.UUID | None) -> str | None:
     if u.profile is not None and u.profile.full_name:
         return u.profile.full_name
     return f"@{u.username}"
+
+
+def _recorder_label(db: Session, user_id: uuid.UUID | None) -> str | None:
+    """Display label for who recorded a product sale (e.g. Admin Daniel, Manager Grace)."""
+    if not user_id:
+        return None
+    u = db.get(User, user_id)
+    if u is None:
+        return None
+    if u.profile is not None and u.profile.full_name:
+        name = u.profile.full_name
+    else:
+        name = f"@{u.username}"
+    role_prefix = {
+        UserRole.ADMIN: "Admin",
+        UserRole.MANAGER: "Manager",
+    }.get(u.role)
+    if role_prefix:
+        return f"{role_prefix} {name}"
+    return name
 
 
 def _assert_inventory_access(user: User, *, admin_only: bool = False) -> None:
@@ -233,6 +255,46 @@ def list_products(
     return q.order_by(InventoryProduct.sort_order, InventoryProduct.name).all()
 
 
+_LOW_STOCK_ENTITY = "inventory_product"
+
+
+def sync_low_stock_notifications(db: Session, *, product: InventoryProduct) -> None:
+    """Create or clear low-stock notifications for managers and admins."""
+    entity_id = str(product.id)
+    if (
+        product.status == ServiceTypeStatus.ACTIVE
+        and product.is_low_stock
+    ):
+        existing = (
+            db.query(AppNotification)
+            .filter(
+                AppNotification.entity_type == _LOW_STOCK_ENTITY,
+                AppNotification.entity_id == entity_id,
+                AppNotification.resolved_at.is_(None),
+            )
+            .first()
+        )
+        if existing is None:
+            body = (
+                f"{product.name}\n"
+                f"Remaining: {product.stock_quantity}\n"
+                f"Threshold: {product.low_stock_threshold}"
+            )
+            notification_service.notify_role_users(
+                db,
+                roles={UserRole.ADMIN, UserRole.MANAGER},
+                notification_type=AppNotificationType.LOW_STOCK,
+                title="Low Stock",
+                body=body,
+                entity_type=_LOW_STOCK_ENTITY,
+                entity_id=entity_id,
+            )
+    else:
+        notification_service.resolve_by_entity(
+            db, entity_type=_LOW_STOCK_ENTITY, entity_id=entity_id
+        )
+
+
 def _apply_stock_change(
     db: Session,
     *,
@@ -266,6 +328,7 @@ def _apply_stock_change(
     )
     db.add(movement)
     db.flush()
+    sync_low_stock_notifications(db, product=product)
     return movement
 
 
@@ -333,6 +396,7 @@ def update_product(
         row.status = str(body.status)
     db.add(row)
     db.flush()
+    sync_low_stock_notifications(db, product=row)
     return row
 
 
@@ -390,6 +454,40 @@ def product_lifetime_stats(db: Session, product_id: uuid.UUID) -> dict[str, str 
     }
 
 
+def product_sales_history(
+    db: Session,
+    product_id: uuid.UUID,
+    *,
+    product_name: str | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    sales = (
+        _active_sale_base(db)
+        .options(joinedload(InventoryProductSale.ledger_entry))
+        .filter(InventoryProductSale.product_id == product_id)
+        .order_by(LedgerEntry.occurred_at.desc())
+        .limit(limit)
+        .all()
+    )
+    out: list[dict[str, Any]] = []
+    for sale in sales:
+        ledger = sale.ledger_entry
+        recorder_id = ledger.created_by_user_id if ledger else None
+        out.append(
+            {
+                "id": str(sale.id),
+                "product_name": product_name,
+                "quantity": sale.quantity,
+                "revenue": str(sale.revenue),
+                "profit": str(sale.profit),
+                "recorded_by_user_id": str(recorder_id) if recorder_id else None,
+                "recorded_by_label": _recorder_label(db, recorder_id),
+                "occurred_at": ledger.occurred_at.isoformat() if ledger else None,
+            }
+        )
+    return out
+
+
 def product_detail(db: Session, product_id: uuid.UUID) -> dict[str, Any]:
     product = get_product(db, product_id)
     stats = product_lifetime_stats(db, product_id)
@@ -405,6 +503,7 @@ def product_detail(db: Session, product_id: uuid.UUID) -> dict[str, Any]:
     payload["stock_movements"] = [
         _movement_dict(m, product_name=product.name) for m in movements
     ]
+    payload["sales_history"] = product_sales_history(db, product_id, product_name=product.name)
     return payload
 
 
@@ -416,15 +515,6 @@ def create_product_sale(
 ) -> tuple[LedgerEntry, InventoryProductSale]:
     _assert_inventory_access(actor)
     product = assert_product_selectable(db, body.product_id)
-
-    sold_by = db.get(User, body.sold_by_user_id)
-    if sold_by is None or sold_by.role not in {
-        UserRole.BARBER,
-        UserRole.STAFF,
-        UserRole.MANAGER,
-        UserRole.ADMIN,
-    }:
-        raise ValidationAppError("Invalid team member for sale.", code="INVALID_SOLD_BY")
 
     qty = body.quantity
     if product.stock_quantity < qty:
@@ -463,7 +553,7 @@ def create_product_sale(
         occurred_at=body.occurred_at,
         business_date=business_date,
         sale_category_id=None,
-        employee_user_id=body.sold_by_user_id,
+        employee_user_id=None,
         amount=revenue,
         barber_sequence_index=sale_idx,
         payment_method=body.payment_method,
@@ -493,7 +583,7 @@ def create_product_sale(
         revenue=revenue,
         cost=cost,
         profit=profit,
-        sold_by_user_id=body.sold_by_user_id,
+        sold_by_user_id=actor.id,
     )
     db.add(sale_row)
     db.flush()
@@ -543,6 +633,34 @@ def restore_stock_for_voided_sale(db: Session, *, ledger_entry: LedgerEntry, act
     sale.stock_restored = True
     db.add(sale)
     db.flush()
+
+
+def reconcile_low_stock_notifications(db: Session) -> None:
+    """Ensure notification state matches current stock levels."""
+    for item in low_stock_products(db, limit=500):
+        product = get_product(db, uuid.UUID(item["id"]))
+        sync_low_stock_notifications(db, product=product)
+
+    active_rows = (
+        db.query(AppNotification)
+        .filter(
+            AppNotification.entity_type == _LOW_STOCK_ENTITY,
+            AppNotification.resolved_at.is_(None),
+        )
+        .all()
+    )
+    for row in active_rows:
+        try:
+            product = get_product(db, uuid.UUID(row.entity_id))
+        except NotFoundError:
+            notification_service.resolve_by_entity(
+                db, entity_type=_LOW_STOCK_ENTITY, entity_id=row.entity_id
+            )
+            continue
+        if product.status != ServiceTypeStatus.ACTIVE or not product.is_low_stock:
+            notification_service.resolve_by_entity(
+                db, entity_type=_LOW_STOCK_ENTITY, entity_id=row.entity_id
+            )
 
 
 def low_stock_products(db: Session, *, limit: int = 50) -> list[dict[str, Any]]:
@@ -615,22 +733,25 @@ def product_analytics_for_product(
     }
 
 
-def sales_by_employee_in_range(
+def sales_by_recorder_in_range(
     db: Session, *, start: datetime, end: datetime
 ) -> list[dict[str, Any]]:
     rows = (
         _active_sale_base(db)
+        .options(joinedload(InventoryProductSale.ledger_entry))
         .filter(LedgerEntry.occurred_at >= start, LedgerEntry.occurred_at <= end)
         .all()
     )
     by_user: dict[uuid.UUID, dict[str, Any]] = {}
     for r in rows:
-        uid = r.sold_by_user_id
+        uid = r.ledger_entry.created_by_user_id if r.ledger_entry else None
+        if uid is None:
+            continue
         bucket = by_user.setdefault(
             uid,
             {
-                "sold_by_user_id": str(uid),
-                "sold_by_label": _user_label(db, uid),
+                "recorded_by_user_id": str(uid),
+                "recorded_by_label": _recorder_label(db, uid),
                 "revenue": _ZERO,
                 "cost": _ZERO,
                 "profit": _ZERO,
@@ -656,6 +777,13 @@ def sales_by_employee_in_range(
     return out
 
 
+def sales_by_employee_in_range(
+    db: Session, *, start: datetime, end: datetime
+) -> list[dict[str, Any]]:
+    """Deprecated alias — product sales are attributed to the recorder, not team members."""
+    return sales_by_recorder_in_range(db, start=start, end=end)
+
+
 def enrich_ledger_with_product_sale(db: Session, ledger_row: LedgerEntry) -> dict[str, Any] | None:
     sale = (
         db.query(InventoryProductSale)
@@ -666,6 +794,7 @@ def enrich_ledger_with_product_sale(db: Session, ledger_row: LedgerEntry) -> dic
     if sale is None:
         return None
     product = sale.product
+    recorder_id = ledger_row.created_by_user_id
     return {
         "id": str(sale.id),
         "product_id": str(sale.product_id),
@@ -678,7 +807,7 @@ def enrich_ledger_with_product_sale(db: Session, ledger_row: LedgerEntry) -> dic
         "revenue": str(sale.revenue),
         "cost": str(sale.cost),
         "profit": str(sale.profit),
-        "sold_by_user_id": str(sale.sold_by_user_id),
-        "sold_by_label": _user_label(db, sale.sold_by_user_id),
+        "recorded_by_user_id": str(recorder_id) if recorder_id else None,
+        "recorded_by_label": _recorder_label(db, recorder_id),
         "stock_restored": sale.stock_restored,
     }

@@ -20,6 +20,7 @@ export default function InventoryHubPage() {
   const [summary, setSummary] = React.useState<{
     inventory_value: string;
     period: { product_revenue: string; product_cost: string; product_profit: string };
+    all_time?: { product_revenue: string; product_cost: string; product_profit: string };
     low_stock_count: number;
   } | null>(null);
 
@@ -71,6 +72,14 @@ export default function InventoryHubPage() {
                   value={formatNaira(Number(summary.inventory_value))}
                   hint="Stock on hand at cost"
                 />
+                {summary.all_time ? (
+                  <SummaryMetricCard
+                    label="All-time product profit"
+                    value={formatNaira(Number(summary.all_time.product_profit))}
+                    tone="muted"
+                    hint="Lifetime inventory profit"
+                  />
+                ) : null}
               </>
             ) : (
               <SummaryMetricCard
@@ -82,7 +91,7 @@ export default function InventoryHubPage() {
           </div>
         ) : null}
 
-        <div className="grid gap-4 sm:grid-cols-3">
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {[
             {
               href: "/barbershop/inventory/categories",
@@ -95,6 +104,12 @@ export default function InventoryHubPage() {
               icon: Package,
               title: "Products",
               body: "Cost, price, stock, and alerts",
+            },
+            {
+              href: "/barbershop/inventory/reports",
+              icon: Tag,
+              title: "Sales by recorder",
+              body: "Revenue and profit per admin or manager",
             },
             {
               href: "/barbershop/daily-ledger",

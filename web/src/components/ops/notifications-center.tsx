@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertTriangle, Bell, CheckCircle2 } from "lucide-react";
+import { AlertTriangle, Bell, CheckCircle2, Package } from "lucide-react";
 import Link from "next/link";
 
 import { useOpsNotifications } from "@/components/ops/ops-notifications-context";
@@ -24,6 +24,10 @@ const KIND: Record<
     icon: AlertTriangle,
     className: "text-rose-700 dark:text-rose-300",
   },
+  inventory: {
+    icon: Package,
+    className: "text-amber-700 dark:text-amber-300",
+  },
 };
 
 export function NotificationsCenter() {
@@ -34,7 +38,8 @@ export function NotificationsCenter() {
       <div className="rounded-[var(--radius-xl)] border border-dashed border-[var(--border)] bg-[var(--card)]/60 px-6 py-16 text-center">
         <p className="text-sm font-medium text-[var(--foreground)]">You are fully caught up</p>
         <p className="mt-2 text-sm text-[var(--muted-foreground)]">
-          Pending approvals, reconciliation alerts, and disputes will appear here until resolved.
+          Pending approvals, reconciliation alerts, low stock warnings, and disputes will appear
+          here until resolved.
         </p>
       </div>
     );
@@ -60,7 +65,9 @@ export function NotificationsCenter() {
             </div>
             <div className="min-w-0 flex-1 space-y-1">
               <p className="text-sm font-medium text-[var(--foreground)]">{n.title}</p>
-              <p className="text-sm leading-relaxed text-[var(--muted-foreground)]">{n.body}</p>
+              <p className="whitespace-pre-line text-sm leading-relaxed text-[var(--muted-foreground)]">
+                {n.body}
+              </p>
               <p className="text-[11px] uppercase tracking-wider text-[var(--muted-foreground)]">
                 {new Date(n.createdAt).toLocaleString("en-NG", {
                   weekday: "short",
@@ -79,6 +86,17 @@ export function NotificationsCenter() {
             >
               Clear
             </Button>
+            {n.relatedProductId ? (
+              <Link
+                href={`/barbershop/inventory/products/${n.relatedProductId}`}
+                className={cn(
+                  buttonVariants({ size: "sm", variant: "outline" }),
+                  "shrink-0 self-start rounded-full border-dashed text-xs",
+                )}
+              >
+                View product
+              </Link>
+            ) : null}
             {n.relatedTransactionId ? (
               <Link
                 href="/barbershop/reconciliation"

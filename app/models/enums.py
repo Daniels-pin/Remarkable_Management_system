@@ -107,6 +107,7 @@ class AppNotificationType(StrEnum):
     RECONCILIATION_REVIEW_REQUEST = "reconciliation_review_request"
     DISPUTE_REQUIRES_MANAGER = "dispute_requires_manager"
     DISPUTE_REQUIRES_ADMIN = "dispute_requires_admin"
+    LOW_STOCK = "low_stock"
 
 
 class CommissionPayoutState(StrEnum):

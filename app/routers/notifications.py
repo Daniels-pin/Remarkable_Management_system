@@ -4,7 +4,8 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.core.deps import ActorContext, get_actor_context, get_db
-from app.services import notification_service
+from app.models.enums import UserRole
+from app.services import inventory_service, notification_service
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
 
@@ -14,6 +15,9 @@ def list_notifications(
     db: Session = Depends(get_db),
     actor: ActorContext = Depends(get_actor_context),
 ) -> dict:
+    if actor.user.role in (UserRole.MANAGER, UserRole.ADMIN):
+        inventory_service.reconcile_low_stock_notifications(db)
+        db.commit()
     rows = notification_service.list_active_for_user(db, user_id=actor.user.id)
     return {
         "items": [

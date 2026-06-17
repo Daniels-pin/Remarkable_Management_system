@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertTriangle, Plus } from "lucide-react";
+import { AlertTriangle, MoreHorizontal, Plus } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import * as React from "react";
@@ -8,21 +8,33 @@ import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
   ApiError,
   listInventoryCategories,
   listInventoryProducts,
   listLowStockProducts,
+  updateInventoryProduct,
+  type CategoryStatus,
   type InventoryCategoryItem,
   type InventoryProductItem,
 } from "@/lib/api";
 import { formatNaira } from "@/lib/format";
 import { InventoryProductFormDialog } from "@/components/ops/inventory-product-form-dialog";
 import { CatalogStatusPill } from "@/components/ops/catalog-status-pill";
+import { useAuth } from "@/components/providers/auth-provider";
 
 export function InventoryProductsPanel() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const categoryFilter = searchParams.get("category") ?? "";
+  const { session } = useAuth();
+  const canManageStatus = session?.role === "admin" || session?.role === "manager";
 
   const [loading, setLoading] = React.useState(true);
   const [categories, setCategories] = React.useState<InventoryCategoryItem[]>([]);
@@ -30,6 +42,7 @@ export function InventoryProductsPanel() {
   const [lowStock, setLowStock] = React.useState<InventoryProductItem[]>([]);
   const [formOpen, setFormOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<InventoryProductItem | null>(null);
+  const [updatingId, setUpdatingId] = React.useState<string | null>(null);
 
   const load = React.useCallback(async () => {
     setLoading(true);
@@ -56,6 +69,27 @@ export function InventoryProductsPanel() {
   React.useEffect(() => {
     queueMicrotask(() => void load());
   }, [load]);
+
+  async function setProductStatus(product: InventoryProductItem, next: CategoryStatus) {
+    setUpdatingId(product.id);
+    try {
+      await updateInventoryProduct(product.id, { status: next });
+      toast.success(
+        next === "active" ? "Product reactivated" : next === "disabled" ? "Product disabled" : "Product archived",
+      );
+      await load();
+    } catch (e) {
+      if (e instanceof ApiError) toast.error(e.message);
+      else toast.error("Could not update product status.");
+    } finally {
+      setUpdatingId(null);
+    }
+  }
+
+  function openEdit(product: InventoryProductItem) {
+    setEditing(product);
+    setFormOpen(true);
+  }
 
   return (
     <div className="space-y-6">
@@ -144,12 +178,62 @@ export function InventoryProductsPanel() {
                     <CatalogStatusPill status={p.status} />
                   </td>
                   <td className="px-4 py-3 text-right">
-                    <Link
-                      href={`/barbershop/inventory/products/${p.id}`}
-                      className="inline-flex h-8 items-center rounded-[var(--radius-md)] border border-[var(--border)] px-3 text-xs font-medium hover:bg-[var(--muted)]/40"
-                    >
-                      View
-                    </Link>
+                    <div className="flex items-center justify-end gap-1.5">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-8 rounded-[var(--radius-md)] px-3 text-xs"
+                        onClick={() => openEdit(p)}
+                      >
+                        Edit
+                      </Button>
+                      <Link
+                        href={`/barbershop/inventory/products/${p.id}`}
+                        className="inline-flex h-8 items-center rounded-[var(--radius-md)] border border-[var(--border)] px-3 text-xs font-medium hover:bg-[var(--muted)]/40"
+                      >
+                        View
+                      </Link>
+                      {canManageStatus ? (
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon-sm"
+                              disabled={updatingId === p.id}
+                              aria-label="Product actions"
+                            >
+                              <MoreHorizontal className="h-4 w-4" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem onClick={() => openEdit(p)}>Edit</DropdownMenuItem>
+                            {p.status === "active" ? (
+                              <DropdownMenuItem onClick={() => void setProductStatus(p, "disabled")}>
+                                Disable
+                              </DropdownMenuItem>
+                            ) : null}
+                            {p.status !== "active" ? (
+                              <DropdownMenuItem onClick={() => void setProductStatus(p, "active")}>
+                                Reactivate
+                              </DropdownMenuItem>
+                            ) : null}
+                            {p.status !== "archived" ? (
+                              <>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem
+                                  className="text-red-600 focus:text-red-600 dark:text-red-400"
+                                  onClick={() => void setProductStatus(p, "archived")}
+                                >
+                                  Archive
+                                </DropdownMenuItem>
+                              </>
+                            ) : null}
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      ) : null}
+                    </div>
                   </td>
                 </tr>
               ))}

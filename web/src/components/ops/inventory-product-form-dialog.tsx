@@ -10,6 +10,7 @@ import {
   ApiError,
   createInventoryProduct,
   updateInventoryProduct,
+  type CategoryStatus,
   type InventoryCategoryItem,
   type InventoryProductItem,
 } from "@/lib/api";
@@ -43,6 +44,7 @@ export function InventoryProductFormDialog({
   const [openingStock, setOpeningStock] = React.useState("0");
   const [lowStock, setLowStock] = React.useState("5");
   const [imageUrl, setImageUrl] = React.useState("");
+  const [status, setStatus] = React.useState<CategoryStatus>("active");
   const [saving, setSaving] = React.useState(false);
 
   React.useEffect(() => {
@@ -55,6 +57,7 @@ export function InventoryProductFormDialog({
       setOpeningStock("0");
       setLowStock(String(editing.low_stock_threshold));
       setImageUrl(editing.image_url ?? "");
+      setStatus(editing.status);
     } else {
       const first = categories.find((c) => c.status === "active");
       setCategoryId(first?.id ?? "");
@@ -64,6 +67,7 @@ export function InventoryProductFormDialog({
       setOpeningStock("0");
       setLowStock("5");
       setImageUrl("");
+      setStatus("active");
     }
   }, [open, editing, categories]);
 
@@ -91,6 +95,7 @@ export function InventoryProductFormDialog({
           default_selling_price: sell,
           low_stock_threshold: low,
           image_url: imageUrl.trim() || null,
+          status,
         });
         toast.success("Product updated");
       } else {
@@ -186,6 +191,20 @@ export function InventoryProductFormDialog({
               <Label>Image URL (optional)</Label>
               <Input value={imageUrl} onChange={(e) => setImageUrl(e.target.value)} />
             </div>
+            {editing ? (
+              <div className="space-y-1.5">
+                <Label>Status</Label>
+                <select
+                  value={status}
+                  onChange={(e) => setStatus(e.target.value as CategoryStatus)}
+                  className="flex h-10 w-full rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--input-bg)] px-3 text-sm"
+                >
+                  <option value="active">Active</option>
+                  <option value="disabled">Disabled</option>
+                  <option value="archived">Archived</option>
+                </select>
+              </div>
+            ) : null}
             <Button
               type="submit"
               disabled={saving}

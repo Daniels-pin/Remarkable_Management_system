@@ -58,6 +58,13 @@ export type LedgerTransaction = {
   canEdit?: boolean;
   canVoid?: boolean;
   paymentMethodAdjustments?: PaymentMethodAdjustment[];
+  productSale?: {
+    productName: string;
+    quantity: number;
+    recordedByLabel: string | null;
+    unitSellingPrice: number;
+    revenue: number;
+  };
 };
 
 export type ExpenseSourceBreakdown = {
@@ -72,15 +79,19 @@ export type ExpenseSourceBreakdown = {
 export type FinancialSnapshot = {
   totalRevenue: number;
   servicesRevenue: number;
+  serviceExpenses: number;
+  serviceNetProfit: number;
   productSalesRevenue: number;
   productCost: number;
   productProfit: number;
   inventoryValue: number;
+  lowStockCount: number;
   totalExpenses: number;
   operationalExpenses: number;
   rentExpenses: number;
   payrollCommission: number;
   netProfit: number;
+  totalBusinessNetProfit: number;
   expenseSources: ExpenseSourceBreakdown;
   paymentMethods: Record<PaymentMethod, number>;
 };
@@ -154,7 +165,7 @@ export type PayoutRow = {
   paidAt: string | null;
 };
 
-export type NotificationKind = "approval" | "reconciliation" | "dispute";
+export type NotificationKind = "approval" | "reconciliation" | "dispute" | "inventory";
 
 export type OpsNotification = {
   id: string;
@@ -163,4 +174,5 @@ export type OpsNotification = {
   body: string;
   createdAt: string;
   relatedTransactionId?: string;
+  relatedProductId?: string;
 };

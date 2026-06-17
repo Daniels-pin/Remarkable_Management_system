@@ -80,6 +80,8 @@ def _enrich_row(
         "note": r.note,
         "employee_user_id": str(r.employee_user_id) if r.employee_user_id else None,
         "employee_label": _employee_label(db, r.employee_user_id),
+        "created_by_user_id": str(r.created_by_user_id) if r.created_by_user_id else None,
+        "created_by_label": inventory_service._recorder_label(db, r.created_by_user_id),
         "barber_sequence_index": r.barber_sequence_index,
         "index_label": ledger_service.index_label_for_entry(db, r),
         "reconciliation_status": str(r.reconciliation_status) if r.reconciliation_status else None,

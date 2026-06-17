@@ -58,7 +58,6 @@ class ProductSaleCreate(BaseModel):
         ge=0,
         description="Custom negotiated price; defaults to product default selling price.",
     )
-    sold_by_user_id: UUID
     payment_method: PaymentMethod
     occurred_at: datetime
     note: str | None = None

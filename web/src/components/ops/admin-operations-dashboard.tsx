@@ -116,9 +116,10 @@ export function AdminOperationsDashboard() {
   }, [loadAnalytics]);
 
   const noFinancialActivity =
-    current.totalRevenue === 0 &&
-    current.totalExpenses === 0 &&
-    current.netProfit === 0;
+    current.servicesRevenue === 0 &&
+    current.productSalesRevenue === 0 &&
+    current.serviceExpenses === 0 &&
+    current.totalBusinessNetProfit === 0;
 
   return (
     <div className="space-y-10">
@@ -181,7 +182,7 @@ export function AdminOperationsDashboard() {
         ) : null}
       </div>
 
-      <section className="space-y-3">
+      <section className="space-y-6">
         <div className="flex items-baseline justify-between gap-4">
           <h3 className="text-xs font-medium uppercase tracking-[0.16em] text-[var(--muted-foreground)]">
             Selected range
@@ -189,64 +190,91 @@ export function AdminOperationsDashboard() {
           <span className="text-xs text-[var(--muted-foreground)]">
             {analyticsLoading
               ? "Loading ledger aggregates…"
-              : "Totals reflect posted services, sales, and expenses."}
+              : "Service and inventory financials are calculated independently."}
           </span>
         </div>
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <SummaryMetricCard
-            label="Total revenue"
-            value={formatNaira(current.totalRevenue)}
-            hint={
-              noFinancialActivity
-                ? "No revenue recorded for this range yet."
-                : undefined
-            }
-          />
-          <SummaryMetricCard
-            label="Services revenue"
-            value={formatNaira(current.servicesRevenue)}
-            hint="Core service tickets"
-          />
-          <SummaryMetricCard
-            label="Product revenue"
-            value={formatNaira(current.productSalesRevenue)}
-            hint="Retail at chair & desk"
-          />
-          <SummaryMetricCard
-            label="Product profit"
-            value={formatNaira(current.productProfit)}
-            tone="positive"
-            hint="Revenue minus cost of goods sold"
-          />
-          <SummaryMetricCard
-            label="Net profit"
-            value={formatNaira(current.netProfit)}
-            tone={current.netProfit >= 0 ? "positive" : "negative"}
-            hint={
-              noFinancialActivity
-                ? "Profit appears once revenue and expenses are posted."
-                : "Revenue minus operational expenses and team payout obligations."
-            }
-          />
+
+        <div className="space-y-3">
+          <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
+            Service financials
+          </p>
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            <SummaryMetricCard
+              label="Service revenue"
+              value={formatNaira(current.servicesRevenue)}
+              hint="Core service tickets"
+            />
+            <SummaryMetricCard
+              label="Service expenses"
+              value={formatNaira(current.serviceExpenses)}
+              tone="negative"
+              hint="Operational spend, rent, and team payout obligations"
+            />
+            <SummaryMetricCard
+              label="Service net profit"
+              value={formatNaira(current.serviceNetProfit)}
+              tone={current.serviceNetProfit >= 0 ? "positive" : "negative"}
+              hint={
+                noFinancialActivity
+                  ? "Profit appears once revenue and expenses are posted."
+                  : "Service revenue minus all service-side expenses"
+              }
+            />
+          </div>
         </div>
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <SummaryMetricCard
-            label="Product cost"
-            value={formatNaira(current.productCost)}
-            hint="COGS for inventory sales in range"
-          />
-          <SummaryMetricCard
-            label="Inventory value"
-            value={formatNaira(current.inventoryValue)}
-            hint="Stock on hand at cost price"
-            tone="muted"
-          />
-          <SummaryMetricCard
-            label="Total expenses"
-            value={formatNaira(current.totalExpenses)}
-            tone="negative"
-            hint="Operational spend plus salary & commission"
-          />
+
+        <div className="space-y-3">
+          <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
+            Inventory financials
+          </p>
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            <SummaryMetricCard
+              label="Inventory revenue"
+              value={formatNaira(current.productSalesRevenue)}
+              hint="Retail at chair & desk"
+            />
+            <SummaryMetricCard
+              label="Inventory cost"
+              value={formatNaira(current.productCost)}
+              hint="COGS for inventory sales in range"
+            />
+            <SummaryMetricCard
+              label="Inventory profit"
+              value={formatNaira(current.productProfit)}
+              tone="positive"
+              hint="Revenue minus cost of goods sold"
+            />
+            <SummaryMetricCard
+              label="Inventory value"
+              value={formatNaira(current.inventoryValue)}
+              hint="Stock on hand at cost price"
+              tone="muted"
+            />
+          </div>
+        </div>
+
+        <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--card)] p-5">
+          <div className="grid gap-4 sm:grid-cols-3">
+            <SummaryMetricCard
+              label="Service net profit"
+              value={formatNaira(current.serviceNetProfit)}
+              tone={current.serviceNetProfit >= 0 ? "positive" : "negative"}
+            />
+            <SummaryMetricCard
+              label="Inventory profit"
+              value={formatNaira(current.productProfit)}
+              tone="positive"
+            />
+            <SummaryMetricCard
+              label="Total business net profit"
+              value={formatNaira(current.totalBusinessNetProfit)}
+              tone={current.totalBusinessNetProfit >= 0 ? "positive" : "negative"}
+              hint="Service net profit plus inventory profit only"
+            />
+          </div>
+        </div>
+
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
           <SummaryMetricCard
             label="Shop expenses"
             value={formatNaira(current.operationalExpenses)}
@@ -259,8 +287,8 @@ export function AdminOperationsDashboard() {
           />
           <SummaryMetricCard
             label="All-time net (reference)"
-            value={formatNaira(allTime.netProfit)}
-            hint="Lifetime net from first posted service, sale, or expense."
+            value={formatNaira(allTime.totalBusinessNetProfit)}
+            hint="Lifetime combined profit from first posted entry."
             tone="muted"
           />
         </div>
@@ -282,13 +310,13 @@ export function AdminOperationsDashboard() {
                   Selected period · posture
                 </p>
                 <p className="mt-1 font-[family-name:var(--font-serif)] text-xl font-semibold text-[var(--foreground)]">
-                  {formatNaira(current.totalRevenue)} revenue
+                  {formatNaira(current.totalBusinessNetProfit)} net profit
                 </p>
               </div>
               <p className="text-sm text-[var(--muted-foreground)]">
                 All-time roll-up{" "}
                 <span className="font-medium text-[var(--foreground)]">
-                  {formatNaira(allTime.totalRevenue)}
+                  {formatNaira(allTime.totalBusinessNetProfit)}
                 </span>
                 {noFinancialActivity ? (
                   <span className="mt-1 block text-xs">

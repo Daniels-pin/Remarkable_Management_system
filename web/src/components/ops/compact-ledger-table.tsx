@@ -22,7 +22,10 @@ const DESKTOP_GRID =
 
 function typeLabel(t: LedgerTransaction) {
   if (t.type === "service") return t.serviceType ?? "Service";
-  if (t.type === "sale") return t.saleCategory ?? "Sale";
+  if (t.type === "sale") {
+    if (t.productSale) return t.productSale.productName;
+    return t.saleCategory ?? "Sale";
+  }
   return t.expenseCategory ?? "Expense";
 }
 
@@ -107,6 +110,11 @@ function CompactLedgerRow({
           </span>
           <span className="min-w-0 flex-1 truncate text-xs font-medium text-[var(--foreground)] md:col-start-2">
             {label}
+            {row.type === "sale" && row.productSale ? (
+              <span className="ml-1.5 text-[10px] font-normal text-[var(--muted-foreground)]">
+                ×{row.productSale.quantity}
+              </span>
+            ) : null}
             {voided || row.pendingVoidReason ? (
               <span className="ml-2 inline-block align-middle">
                 <LedgerVoidBadge
@@ -224,6 +232,30 @@ function CompactLedgerRow({
               ) : (
                 <StatusBadge status={row.status} />
               )}
+              {row.type === "sale" && row.productSale ? (
+                <div className="mt-2 space-y-1 text-xs text-[var(--foreground)]">
+                  <p>
+                    <span className="text-[var(--muted-foreground)]">Qty: </span>
+                    {row.productSale.quantity}
+                  </p>
+                  <p>
+                    <span className="text-[var(--muted-foreground)]">Recorded by: </span>
+                    {row.productSale.recordedByLabel ?? row.employeeName ?? "—"}
+                  </p>
+                  <p>
+                    <span className="text-[var(--muted-foreground)]">Unit price: </span>
+                    <span className="tabular-nums">
+                      {formatNaira(row.productSale.unitSellingPrice)}
+                    </span>
+                  </p>
+                  <p>
+                    <span className="text-[var(--muted-foreground)]">Total: </span>
+                    <span className="font-medium tabular-nums">
+                      {formatNaira(row.productSale.revenue)}
+                    </span>
+                  </p>
+                </div>
+              ) : null}
               {row.note?.trim() ? (
                 <p className="mt-1.5 text-xs italic text-[var(--muted-foreground)]">&ldquo;{row.note}&rdquo;</p>
               ) : null}
