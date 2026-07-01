@@ -23,8 +23,8 @@ export default function CommissionPayrollPage() {
 
   return (
     <BarbershopShell
-      title="Commission payroll"
-      subtitle="Month-end commission obligations with approved revenue and attendance deductions."
+      title="Payroll center"
+      subtitle="Commission and salary obligations with attendance deductions for the selected month."
     >
       <CommissionPayrollPanel />
     </BarbershopShell>

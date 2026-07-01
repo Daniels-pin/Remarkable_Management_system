@@ -1332,6 +1332,22 @@ export type CommissionPayrollRow = {
   attendance_waivers?: CommissionPayrollWaiverRow[];
 };
 
+export type SalaryPayrollRow = {
+  user_id: string;
+  display_name: string;
+  username: string;
+  role: string;
+  monthly_salary: string;
+  late_deductions: string;
+  absence_deductions: string;
+  other_deductions: string;
+  attendance_deductions_total: string;
+  final_salary_payable: string;
+  status: string;
+  attendance_deduction_items?: AttendanceDeductionItem[];
+  attendance_waivers?: CommissionPayrollWaiverRow[];
+};
+
 export type CommissionPayrollSummary = {
   year: number;
   month: number;
@@ -1341,6 +1357,7 @@ export type CommissionPayrollSummary = {
   commission_total: string;
   salary_total: string;
   items: CommissionPayrollRow[];
+  salary_items: SalaryPayrollRow[];
 };
 
 export function getCommissionPayroll(year?: number, month?: number) {

@@ -293,7 +293,7 @@ export function FinanceArchive() {
               href="/barbershop/finance/commission-payroll"
               className={buttonVariants({ className: "rounded-full" })}
             >
-              Commission payroll
+              Payroll center
             </Link>
           ) : null}
         </div>

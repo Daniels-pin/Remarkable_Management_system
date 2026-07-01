@@ -19,21 +19,54 @@ import {
   getCommissionPayroll,
   listFinancialMonths,
   type CommissionPayrollRow,
+  type CommissionPayrollWaiverRow,
   type FinancialMonthRow,
+  type SalaryPayrollRow,
 } from "@/lib/api";
 import { monthLabel } from "@/lib/financial-month";
 import { formatNaira } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
+type PayrollView = "commission" | "salary";
+
 function statusTone(status: string): string {
   if (status === "paid") return "text-emerald-700 dark:text-emerald-300";
+  if (status === "approved") return "text-emerald-700 dark:text-emerald-300";
   if (status === "pending" || status === "mismatch") return "text-amber-800 dark:text-amber-200";
   if (status === "unpaid") return "text-rose-700 dark:text-rose-300";
   return "text-[var(--muted-foreground)]";
 }
 
-function PayrollDetailDialog({
+function WaiverList({ waivers }: { waivers?: CommissionPayrollWaiverRow[] }) {
+  if (!waivers?.length) return null;
+
+  return (
+    <div className="rounded-[var(--radius-md)] border border-[var(--border)]/80 bg-[var(--muted)]/10 px-3 py-3">
+      <p className="text-[10px] font-medium uppercase tracking-[0.12em] text-[var(--muted-foreground)]">
+        Attendance waivers
+      </p>
+      <ul className="mt-2 space-y-2">
+        {waivers.map((w) => (
+          <li key={w.id} className="text-xs">
+            <p className="font-medium text-[var(--foreground)]">
+              {new Date(w.business_date).toLocaleDateString("en-NG")} ·{" "}
+              {w.deduction_reason ?? "penalty"}
+            </p>
+            <p className="mt-0.5 text-[var(--muted-foreground)]">{w.waiver_reason}</p>
+            {Number(w.original_deduction_amount) > 0 ? (
+              <p className="mt-0.5 tabular-nums text-emerald-700 dark:text-emerald-300">
+                Waived {formatNaira(Number(w.original_deduction_amount))}
+              </p>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function CommissionDetailDialog({
   row,
   open,
   onOpenChange,
@@ -81,30 +114,52 @@ function PayrollDetailDialog({
               strong
             />
           </dl>
+          <WaiverList waivers={row.attendance_waivers} />
+        </DialogBody>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
-          {(row.attendance_waivers?.length ?? 0) > 0 ? (
-            <div className="rounded-[var(--radius-md)] border border-[var(--border)]/80 bg-[var(--muted)]/10 px-3 py-3">
-              <p className="text-[10px] font-medium uppercase tracking-[0.12em] text-[var(--muted-foreground)]">
-                Attendance waivers
-              </p>
-              <ul className="mt-2 space-y-2">
-                {row.attendance_waivers?.map((w) => (
-                  <li key={w.id} className="text-xs">
-                    <p className="font-medium text-[var(--foreground)]">
-                      {new Date(w.business_date).toLocaleDateString("en-NG")} ·{" "}
-                      {w.deduction_reason ?? "penalty"}
-                    </p>
-                    <p className="mt-0.5 text-[var(--muted-foreground)]">{w.waiver_reason}</p>
-                    {Number(w.original_deduction_amount) > 0 ? (
-                      <p className="mt-0.5 tabular-nums text-emerald-700 dark:text-emerald-300">
-                        Waived {formatNaira(Number(w.original_deduction_amount))}
-                      </p>
-                    ) : null}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
+function SalaryDetailDialog({
+  row,
+  open,
+  onOpenChange,
+}: {
+  row: SalaryPayrollRow | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  if (!row) return null;
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="w-[min(100%,32rem)]">
+        <DialogHeader>
+          <DialogTitle>{row.display_name}</DialogTitle>
+        </DialogHeader>
+        <DialogBody className="space-y-4">
+          <dl className="grid gap-3 text-sm">
+            <DetailRow label="Monthly salary" value={formatNaira(Number(row.monthly_salary))} />
+            <DetailRow label="Late deductions" value={formatNaira(Number(row.late_deductions))} />
+            <DetailRow
+              label="Absence deductions"
+              value={formatNaira(Number(row.absence_deductions))}
+            />
+            {Number(row.other_deductions) > 0 ? (
+              <DetailRow
+                label="Other approved deductions"
+                value={formatNaira(Number(row.other_deductions))}
+              />
+            ) : null}
+            <DetailRow
+              label="Final salary payable"
+              value={formatNaira(Number(row.final_salary_payable))}
+              strong
+            />
+            <DetailRow label="Approval status" value={row.status} />
+          </dl>
+          <WaiverList waivers={row.attendance_waivers} />
         </DialogBody>
       </DialogContent>
     </Dialog>
@@ -135,6 +190,14 @@ function DetailRow({
   );
 }
 
+function DeductionCell({ amount }: { amount: string }) {
+  return (
+    <td className="px-4 py-3 text-right tabular-nums text-amber-800 dark:text-amber-200">
+      {Number(amount) > 0 ? formatNaira(Number(amount)) : "—"}
+    </td>
+  );
+}
+
 export function CommissionPayrollPanel({ embedded = false }: { embedded?: boolean }) {
   const searchParams = useSearchParams();
   const now = React.useMemo(() => new Date(), []);
@@ -143,12 +206,16 @@ export function CommissionPayrollPanel({ embedded = false }: { embedded?: boolea
   const [months, setMonths] = React.useState<FinancialMonthRow[]>([]);
   const [selectedYear, setSelectedYear] = React.useState(initialYear);
   const [selectedMonth, setSelectedMonth] = React.useState(initialMonth);
-  const [rows, setRows] = React.useState<CommissionPayrollRow[]>([]);
+  const [view, setView] = React.useState<PayrollView>("commission");
+  const [commissionRows, setCommissionRows] = React.useState<CommissionPayrollRow[]>([]);
+  const [salaryRows, setSalaryRows] = React.useState<SalaryPayrollRow[]>([]);
   const [commissionTotal, setCommissionTotal] = React.useState(0);
   const [salaryTotal, setSalaryTotal] = React.useState(0);
   const [loading, setLoading] = React.useState(true);
-  const [detailRow, setDetailRow] = React.useState<CommissionPayrollRow | null>(null);
-  const [detailOpen, setDetailOpen] = React.useState(false);
+  const [commissionDetail, setCommissionDetail] = React.useState<CommissionPayrollRow | null>(null);
+  const [salaryDetail, setSalaryDetail] = React.useState<SalaryPayrollRow | null>(null);
+  const [commissionDetailOpen, setCommissionDetailOpen] = React.useState(false);
+  const [salaryDetailOpen, setSalaryDetailOpen] = React.useState(false);
 
   const selectedArchive = React.useMemo(
     () => months.find((m) => m.year === selectedYear && m.month === selectedMonth) ?? null,
@@ -165,13 +232,15 @@ export function CommissionPayrollPanel({ embedded = false }: { embedded?: boolea
     setLoading(true);
     try {
       const res = await getCommissionPayroll(selectedYear, selectedMonth);
-      setRows(res.items);
+      setCommissionRows(res.items);
+      setSalaryRows(res.salary_items ?? []);
       setCommissionTotal(Number(res.commission_total) || 0);
       setSalaryTotal(Number(res.salary_total) || 0);
     } catch (e) {
       if (e instanceof ApiError) toast.error(e.message);
-      else toast.error("Could not load commission payroll.");
-      setRows([]);
+      else toast.error("Could not load payroll.");
+      setCommissionRows([]);
+      setSalaryRows([]);
       setCommissionTotal(0);
       setSalaryTotal(0);
     } finally {
@@ -183,10 +252,10 @@ export function CommissionPayrollPanel({ embedded = false }: { embedded?: boolea
     queueMicrotask(() => void loadPayroll());
   }, [loadPayroll]);
 
-  const openDetail = (row: CommissionPayrollRow) => {
-    setDetailRow(row);
-    setDetailOpen(true);
-  };
+  const tableTitle =
+    view === "commission"
+      ? `Commission earners · ${monthLabel(selectedYear, selectedMonth)}`
+      : `Salary earners · ${monthLabel(selectedYear, selectedMonth)}`;
 
   return (
     <div className={cn("space-y-8", embedded && "space-y-6")}>
@@ -201,11 +270,11 @@ export function CommissionPayrollPanel({ embedded = false }: { embedded?: boolea
             </Link>
           </div>
           <h2 className="font-[family-name:var(--font-serif)] text-2xl font-semibold tracking-tight text-[var(--foreground)] md:text-3xl">
-            Commission payroll
+            Payroll center
           </h2>
           <p className="max-w-2xl text-sm leading-relaxed text-[var(--muted-foreground)]">
-            Month-end commission obligations with approved revenue, attendance deductions, and final
-            payable amounts — read from existing financial records.
+            Month-end commission and salary obligations with attendance deductions and final payable
+            amounts — read from existing financial records.
           </p>
         </header>
       ) : null}
@@ -259,38 +328,98 @@ export function CommissionPayrollPanel({ embedded = false }: { embedded?: boolea
           value={formatNaira(commissionTotal)}
           hint="Sum of final commission payable"
           className="h-full"
+          active={view === "commission"}
+          onClick={() => setView("commission")}
         />
         <SummaryMetricCard
           label="Salary total"
           value={formatNaira(salaryTotal)}
-          hint="Fixed salary obligations for the month"
+          hint="Sum of final salary payable"
           className="h-full"
+          active={view === "salary"}
+          onClick={() => setView("salary")}
         />
       </div>
 
       <div className="overflow-hidden rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--card)] shadow-[var(--shadow-card)]">
         <div className="border-b border-[var(--border)] px-4 py-3">
           <p className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
-            Commission earners · {monthLabel(selectedYear, selectedMonth)}
+            {tableTitle}
           </p>
         </div>
         {loading ? (
           <div className="px-4 py-12 text-center text-sm text-[var(--muted-foreground)]">
-            Loading commission payroll…
+            Loading payroll…
           </div>
-        ) : rows.length === 0 ? (
+        ) : view === "commission" ? (
+          commissionRows.length === 0 ? (
+            <div className="px-4 py-12 text-center text-sm text-[var(--muted-foreground)]">
+              No commission earners for this month.
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[56rem] text-left text-sm">
+                <thead>
+                  <tr className="border-b border-[var(--border)] text-[10px] uppercase tracking-[0.12em] text-[var(--muted-foreground)]">
+                    <th className="px-4 py-3 font-medium">Employee</th>
+                    <th className="px-4 py-3 font-medium text-right">Approved revenue</th>
+                    <th className="px-4 py-3 font-medium text-right">Commission %</th>
+                    <th className="px-4 py-3 font-medium text-right">Expected</th>
+                    <th className="px-4 py-3 font-medium text-right">Late</th>
+                    <th className="px-4 py-3 font-medium text-right">Absence</th>
+                    <th className="px-4 py-3 font-medium text-right">Other</th>
+                    <th className="px-4 py-3 font-medium text-right">Final payable</th>
+                    <th className="px-4 py-3 font-medium">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[var(--border)]">
+                  {commissionRows.map((row) => (
+                    <tr
+                      key={row.user_id}
+                      className="cursor-pointer transition-colors hover:bg-[var(--muted)]/20"
+                      onClick={() => {
+                        setCommissionDetail(row);
+                        setCommissionDetailOpen(true);
+                      }}
+                    >
+                      <td className="px-4 py-3 font-medium text-[var(--foreground)]">
+                        {row.display_name}
+                      </td>
+                      <td className="px-4 py-3 text-right tabular-nums">
+                        {formatNaira(Number(row.approved_revenue))}
+                      </td>
+                      <td className="px-4 py-3 text-right tabular-nums">
+                        {Number(row.commission_pct)}%
+                      </td>
+                      <td className="px-4 py-3 text-right tabular-nums">
+                        {formatNaira(Number(row.expected_commission))}
+                      </td>
+                      <DeductionCell amount={row.late_deductions} />
+                      <DeductionCell amount={row.absence_deductions} />
+                      <DeductionCell amount={row.other_deductions} />
+                      <td className="px-4 py-3 text-right tabular-nums font-semibold text-emerald-700 dark:text-emerald-300">
+                        {formatNaira(Number(row.final_commission_payable))}
+                      </td>
+                      <td className={cn("px-4 py-3 capitalize", statusTone(row.payout_state))}>
+                        {row.payout_state === "paid" ? "Paid" : row.status}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )
+        ) : salaryRows.length === 0 ? (
           <div className="px-4 py-12 text-center text-sm text-[var(--muted-foreground)]">
-            No commission earners for this month.
+            No salary earners for this month.
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[56rem] text-left text-sm">
+            <table className="w-full min-w-[48rem] text-left text-sm">
               <thead>
                 <tr className="border-b border-[var(--border)] text-[10px] uppercase tracking-[0.12em] text-[var(--muted-foreground)]">
                   <th className="px-4 py-3 font-medium">Employee</th>
-                  <th className="px-4 py-3 font-medium text-right">Approved revenue</th>
-                  <th className="px-4 py-3 font-medium text-right">Commission %</th>
-                  <th className="px-4 py-3 font-medium text-right">Expected</th>
+                  <th className="px-4 py-3 font-medium text-right">Monthly salary</th>
                   <th className="px-4 py-3 font-medium text-right">Late</th>
                   <th className="px-4 py-3 font-medium text-right">Absence</th>
                   <th className="px-4 py-3 font-medium text-right">Other</th>
@@ -299,44 +428,29 @@ export function CommissionPayrollPanel({ embedded = false }: { embedded?: boolea
                 </tr>
               </thead>
               <tbody className="divide-y divide-[var(--border)]">
-                {rows.map((row) => (
+                {salaryRows.map((row) => (
                   <tr
                     key={row.user_id}
                     className="cursor-pointer transition-colors hover:bg-[var(--muted)]/20"
-                    onClick={() => openDetail(row)}
+                    onClick={() => {
+                      setSalaryDetail(row);
+                      setSalaryDetailOpen(true);
+                    }}
                   >
                     <td className="px-4 py-3 font-medium text-[var(--foreground)]">
                       {row.display_name}
                     </td>
                     <td className="px-4 py-3 text-right tabular-nums">
-                      {formatNaira(Number(row.approved_revenue))}
+                      {formatNaira(Number(row.monthly_salary))}
                     </td>
-                    <td className="px-4 py-3 text-right tabular-nums">
-                      {Number(row.commission_pct)}%
-                    </td>
-                    <td className="px-4 py-3 text-right tabular-nums">
-                      {formatNaira(Number(row.expected_commission))}
-                    </td>
-                    <td className="px-4 py-3 text-right tabular-nums text-amber-800 dark:text-amber-200">
-                      {Number(row.late_deductions) > 0
-                        ? formatNaira(Number(row.late_deductions))
-                        : "—"}
-                    </td>
-                    <td className="px-4 py-3 text-right tabular-nums text-amber-800 dark:text-amber-200">
-                      {Number(row.absence_deductions) > 0
-                        ? formatNaira(Number(row.absence_deductions))
-                        : "—"}
-                    </td>
-                    <td className="px-4 py-3 text-right tabular-nums text-amber-800 dark:text-amber-200">
-                      {Number(row.other_deductions) > 0
-                        ? formatNaira(Number(row.other_deductions))
-                        : "—"}
-                    </td>
+                    <DeductionCell amount={row.late_deductions} />
+                    <DeductionCell amount={row.absence_deductions} />
+                    <DeductionCell amount={row.other_deductions} />
                     <td className="px-4 py-3 text-right tabular-nums font-semibold text-emerald-700 dark:text-emerald-300">
-                      {formatNaira(Number(row.final_commission_payable))}
+                      {formatNaira(Number(row.final_salary_payable))}
                     </td>
-                    <td className={cn("px-4 py-3 capitalize", statusTone(row.payout_state))}>
-                      {row.payout_state === "paid" ? "Paid" : row.status}
+                    <td className={cn("px-4 py-3 capitalize", statusTone(row.status))}>
+                      {row.status}
                     </td>
                   </tr>
                 ))}
@@ -346,7 +460,16 @@ export function CommissionPayrollPanel({ embedded = false }: { embedded?: boolea
         )}
       </div>
 
-      <PayrollDetailDialog row={detailRow} open={detailOpen} onOpenChange={setDetailOpen} />
+      <CommissionDetailDialog
+        row={commissionDetail}
+        open={commissionDetailOpen}
+        onOpenChange={setCommissionDetailOpen}
+      />
+      <SalaryDetailDialog
+        row={salaryDetail}
+        open={salaryDetailOpen}
+        onOpenChange={setSalaryDetailOpen}
+      />
     </div>
   );
 }

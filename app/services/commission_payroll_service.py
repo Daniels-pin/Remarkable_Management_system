@@ -33,6 +33,14 @@ def earns_commission(user: User) -> bool:
     return user.role == UserRole.BARBER
 
 
+def earns_salary(user: User) -> bool:
+    if user.role not in (UserRole.BARBER, UserRole.STAFF):
+        return False
+    if earns_commission(user):
+        return False
+    return user.salary_type == SalaryType.FIXED and user.fixed_salary is not None
+
+
 def _statement_for_month(
     db: Session, *, financial_month_id, user_id
 ) -> MonthlyCommissionStatement | None:
@@ -56,24 +64,19 @@ def _member_display_name(user: User) -> str:
 
 def month_salary_obligations(db: Session, *, year: int, month: int) -> Decimal:
     """Fixed salary obligations for staff/barbers on fixed pay in one month."""
+    items = _salary_payroll_rows(db, year=year, month=month)
+    return sum((Decimal(i["final_salary_payable"]) for i in items), _ZERO)
+
+
+def _salary_payroll_rows(db: Session, *, year: int, month: int) -> list[dict]:
     months = [(year, month)]
     team = _team_members_for_payroll_period(db, months=months)
-    total = _ZERO
-    for user in team:
-        if earns_commission(user):
-            continue
-        if user.salary_type != SalaryType.FIXED or user.fixed_salary is None:
-            continue
-        payout, _ = month_payout_breakdown(
-            db,
-            user,
-            year=year,
-            month=month,
-            settled=_ZERO,
-            sync_absences=False,
-        )
-        total += Decimal(payout["actual_payout_on_approved"])
-    return total
+    salary_members = [u for u in team if earns_salary(u) and u.account_status == AccountStatus.ACTIVE]
+    salary_members.sort(key=lambda u: (_member_display_name(u).lower(), u.username.lower()))
+    return [
+        salary_payroll_row(db, user, year=year, month=month)
+        for user in salary_members
+    ]
 
 
 def _month_waivers_for_user(
@@ -172,6 +175,49 @@ def commission_payroll_row(
     }
 
 
+def salary_payroll_row(
+    db: Session,
+    user: User,
+    *,
+    year: int,
+    month: int,
+) -> dict:
+    monthly_salary = Decimal(user.fixed_salary) if user.fixed_salary is not None else _ZERO
+    payout, _ = month_payout_breakdown(
+        db,
+        user,
+        year=year,
+        month=month,
+        settled=_ZERO,
+        sync_absences=False,
+    )
+    late = Decimal(payout["attendance_late_deductions_total"])
+    absence = Decimal(payout["attendance_absence_deductions_total"])
+    total_deductions = Decimal(payout["attendance_deductions_total"])
+    other = max(total_deductions - late - absence, _ZERO)
+    final_payable = Decimal(payout["actual_payout_on_approved"])
+    status = "approved" if user.account_status == AccountStatus.ACTIVE else "inactive"
+    waivers = _month_waivers_for_user(db, user_id=user.id, year=year, month=month)
+
+    return {
+        "user_id": str(user.id),
+        "display_name": _member_display_name(user),
+        "username": user.username,
+        "role": str(user.role),
+        "monthly_salary": str(monthly_salary),
+        "late_deductions": str(late),
+        "absence_deductions": str(absence),
+        "other_deductions": str(other),
+        "attendance_deductions_total": str(total_deductions),
+        "final_salary_payable": str(final_payable),
+        "status": status,
+        "attendance_deduction_items": month_deduction_summary(
+            db, user_id=user.id, year=year, month=month
+        )["items"],
+        "attendance_waivers": waivers,
+    }
+
+
 def commission_payroll_summary(
     db: Session,
     *,
@@ -206,8 +252,10 @@ def commission_payroll_summary(
         for user in commission_members
     ]
 
+    salary_items = _salary_payroll_rows(db, year=year, month=month)
+
     commission_total = sum((Decimal(i["final_commission_payable"]) for i in items), _ZERO)
-    salary_total = month_salary_obligations(db, year=year, month=month)
+    salary_total = sum((Decimal(i["final_salary_payable"]) for i in salary_items), _ZERO)
 
     return {
         "year": year,
@@ -216,4 +264,5 @@ def commission_payroll_summary(
         "commission_total": str(commission_total),
         "salary_total": str(salary_total),
         "items": items,
+        "salary_items": salary_items,
     }
