@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.auth.rbac import require_barbershop_finance, require_manager_or_admin
 from app.core.deps import ActorContext, get_actor_context, get_admin_actor, get_db
+from app.core.exceptions import ForbiddenError
 from app.models.commission import MonthlyCommissionStatement
 from app.models.enums import UserRole
 from app.models.financial_month import FinancialMonth
@@ -15,6 +16,7 @@ from app.schemas.financial_month import FinancialMonthCloseBody
 from app.schemas.operations import CommissionMarkPaidBody
 from app.services import commission_service, month_lifecycle_service
 from app.services.attendance_service import month_deduction_summary
+from app.services.commission_payroll_service import commission_payroll_summary
 from app.services.ledger_service import barber_month_revenue_buckets, barber_operational_month_keys
 from app.services.payroll_service import expected_month_payout, month_payout_breakdown
 
@@ -294,3 +296,30 @@ def mark_commission_paid(
     db.commit()
     db.refresh(row)
     return {"id": str(row.id), "payout_state": str(row.payout_state)}
+
+
+@router.get("/commission-payroll")
+def get_commission_payroll(
+    db: Session = Depends(get_db),
+    actor: ActorContext = Depends(get_actor_context),
+    year: int | None = None,
+    month: int | None = None,
+) -> dict:
+    require_barbershop_finance(actor.user)
+    if actor.user.role != UserRole.ADMIN:
+        raise ForbiddenError("Only admins can view commission payroll.", code="ADMIN_ONLY")
+
+    _run_lifecycle(db)
+    today = month_lifecycle_service.calendar_today()
+    y, m = (year or today.year), (month or today.month)
+    fm = month_lifecycle_service.get_financial_month(db, year=y, month=m)
+    open_month = month_lifecycle_service.get_open_financial_month(db)
+    payload = commission_payroll_summary(
+        db,
+        year=y,
+        month=m,
+        financial_month_id=fm.id if fm else None,
+    )
+    payload["state"] = str(fm.state) if fm else "open"
+    payload["is_current"] = open_month is not None and fm is not None and fm.id == open_month.id
+    return payload

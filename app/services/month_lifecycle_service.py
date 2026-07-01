@@ -322,8 +322,9 @@ def serialize_month_row(
     operational = shaped["operational_expenses"]
     rent = shaped.get("rent_expenses", "0")
     payroll = shaped.get("payroll_commission", "0")
+    locked = fm.state == FinancialMonthState.LOCKED
     # Locked months use the captured snapshot; open/grace months always use live ledger math.
-    if snapshot_payload and fm.state == FinancialMonthState.LOCKED:
+    if snapshot_payload and locked:
         revenue = snapshot_payload.get("total_revenue", revenue)
         if str(role) == UserRole.ADMIN:
             expenses = snapshot_payload.get("total_expenses", expenses)
@@ -333,6 +334,11 @@ def serialize_month_row(
         elif str(role) == UserRole.MANAGER:
             expenses = snapshot_payload.get("operational_expenses", operational)
             operational = expenses
+
+    def summary_value(key: str, fallback: str = "0") -> str:
+        if snapshot_payload and locked:
+            return str(snapshot_payload.get(key, shaped.get(key, fallback)))
+        return str(shaped.get(key, fallback))
 
     row: dict[str, Any] = {
         "id": str(fm.id),
@@ -344,6 +350,14 @@ def serialize_month_row(
         "grace_ends_at": fm.grace_ends_at.isoformat() if fm.grace_ends_at else None,
         "locked_at": fm.paid_locked_at.isoformat() if fm.paid_locked_at else None,
         "total_revenue": revenue,
+        "services_revenue": summary_value("services_revenue"),
+        "product_sales_revenue": summary_value("product_sales_revenue"),
+        "service_net_profit": summary_value("service_net_profit"),
+        "product_profit": summary_value("product_profit"),
+        "total_business_net_profit": summary_value(
+            "total_business_net_profit", summary_value("net_profit")
+        ),
+        "inventory_value": summary_value("inventory_value"),
     }
     role_key = str(role)
     if role_key == UserRole.ADMIN:

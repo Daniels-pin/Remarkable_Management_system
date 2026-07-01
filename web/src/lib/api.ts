@@ -272,6 +272,13 @@ export type FinancialMonthRow = {
   attendance_absence_deductions_total?: string;
   attendance_deduction_items?: AttendanceDeductionItem[];
   net_earnings_amount?: string;
+  /** Month summary fields (admin/manager archive) */
+  services_revenue?: string;
+  product_sales_revenue?: string;
+  service_net_profit?: string;
+  product_profit?: string;
+  total_business_net_profit?: string;
+  inventory_value?: string;
 };
 
 export type OperationsSummaryResponse = {
@@ -1288,6 +1295,61 @@ export function markCommissionStatementPaid(
       method: "POST",
       body: JSON.stringify(body),
     },
+  );
+}
+
+export type CommissionPayrollWaiverRow = {
+  id: string;
+  user_id: string;
+  employee_name: string | null;
+  business_date: string;
+  status: string;
+  waiver_reason: string | null;
+  waived_at: string | null;
+  waived_by_name: string | null;
+  original_deduction_amount: string;
+  deduction_reason: string | null;
+};
+
+export type CommissionPayrollRow = {
+  user_id: string;
+  display_name: string;
+  username: string;
+  role: string;
+  approved_revenue: string;
+  matched_service_total: string;
+  commission_pct: string;
+  expected_commission: string;
+  late_deductions: string;
+  absence_deductions: string;
+  other_deductions: string;
+  attendance_deductions_total: string;
+  final_commission_payable: string;
+  status: string;
+  payout_state: string;
+  statement_id: string | null;
+  attendance_deduction_items?: AttendanceDeductionItem[];
+  attendance_waivers?: CommissionPayrollWaiverRow[];
+};
+
+export type CommissionPayrollSummary = {
+  year: number;
+  month: number;
+  financial_month_id: string | null;
+  state: string;
+  is_current?: boolean;
+  commission_total: string;
+  salary_total: string;
+  items: CommissionPayrollRow[];
+};
+
+export function getCommissionPayroll(year?: number, month?: number) {
+  const qs = new URLSearchParams();
+  if (year) qs.set("year", String(year));
+  if (month) qs.set("month", String(month));
+  const q = qs.toString();
+  return apiFetch<CommissionPayrollSummary>(
+    `/api/v1/finance/commission-payroll${q ? `?${q}` : ""}`,
   );
 }
 

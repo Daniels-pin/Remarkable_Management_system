@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import Link from "next/link";
 
 import {
   Dialog,
@@ -9,15 +10,17 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Card, CardContent } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/components/providers/auth-provider";
 import { FinancialMonthStatusPill } from "@/components/ops/financial-month-status-pill";
+import { FinancialMonthSummaryGrid } from "@/components/ops/financial-month-summary-grid";
+import { SummaryMetricCard } from "@/components/ops/summary-metric-card";
 import {
   ApiError,
   closeFinancialMonth,
+  getCommissionPayroll,
   listCommissionStatements,
   listFinancialMonths,
   markCommissionStatementPaid,
@@ -25,6 +28,10 @@ import {
   type FinancialMonthRow,
 } from "@/lib/api";
 import { ExpenseSourceBreakdownCard } from "@/components/ops/expense-source-breakdown";
+import {
+  extractFinancialMonthMetrics,
+  type FinancialMonthMetrics,
+} from "@/lib/financial-month-metrics";
 import {
   financialMonthStatusLabel,
   monthLabel,
@@ -48,6 +55,10 @@ export function FinanceArchive() {
   const [statements, setStatements] = React.useState<CommissionStatementRow[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [closing, setClosing] = React.useState(false);
+  const [payrollTotals, setPayrollTotals] = React.useState<{
+    commissionTotal: number;
+    salaryTotal: number;
+  } | null>(null);
 
   const [markOpen, setMarkOpen] = React.useState(false);
   const [markTarget, setMarkTarget] = React.useState<CommissionStatementRow | null>(null);
@@ -80,6 +91,21 @@ export function FinanceArchive() {
   React.useEffect(() => {
     queueMicrotask(() => void load());
   }, [load]);
+
+  React.useEffect(() => {
+    if (!active || !isAdmin) {
+      setPayrollTotals(null);
+      return;
+    }
+    getCommissionPayroll(active.year, active.month)
+      .then((res) => {
+        setPayrollTotals({
+          commissionTotal: Number(res.commission_total) || 0,
+          salaryTotal: Number(res.salary_total) || 0,
+        });
+      })
+      .catch(() => setPayrollTotals(null));
+  }, [active, isAdmin]);
 
   const activeStatements = React.useMemo(() => {
     if (!active) return [];
@@ -123,7 +149,7 @@ export function FinanceArchive() {
     return "Historical record";
   }, [active]);
 
-  const totalCommission = React.useMemo(() => {
+  const statementCommissionTotal = React.useMemo(() => {
     return activeStatements.reduce((acc, s) => acc + Number(s.commission_amount || 0), 0);
   }, [activeStatements]);
 
@@ -161,6 +187,16 @@ export function FinanceArchive() {
     };
   }, [active]);
 
+  const activeMetrics = React.useMemo((): FinancialMonthMetrics | null => {
+    if (!active) return null;
+    return extractFinancialMonthMetrics(active, {
+      commissionTotal:
+        payrollTotals?.commissionTotal ??
+        (activeStatements.length > 0 ? statementCommissionTotal : null),
+      salaryTotal: payrollTotals?.salaryTotal ?? null,
+    });
+  }, [active, payrollTotals, activeStatements.length, statementCommissionTotal]);
+
   const revenueFor = (m: FinancialMonthRow) => {
     if (m.total_revenue != null) return Number(m.total_revenue) || 0;
     const snap = m.snapshot as { total_revenue?: string } | undefined;
@@ -180,16 +216,9 @@ export function FinanceArchive() {
     return null;
   };
 
-  const servicesRevenueFor = (m: FinancialMonthRow) => {
-    const snap = m.snapshot as { services_revenue?: string } | undefined;
-    if (snap?.services_revenue) return Number(snap.services_revenue) || 0;
-    return null;
-  };
-
-  const productRevenueFor = (m: FinancialMonthRow) => {
-    const snap = m.snapshot as { product_sales_revenue?: string } | undefined;
-    if (snap?.product_sales_revenue) return Number(snap.product_sales_revenue) || 0;
-    return null;
+  const netProfitFor = (m: FinancialMonthRow) => {
+    const metrics = extractFinancialMonthMetrics(m);
+    return metrics.businessNetProfit;
   };
 
   const handleCloseMonth = async () => {
@@ -247,15 +276,27 @@ export function FinanceArchive() {
 
   return (
     <div className="space-y-8">
-      <header className="space-y-2">
-        <h2 className="font-[family-name:var(--font-serif)] text-2xl font-semibold tracking-tight text-[var(--foreground)] md:text-3xl">
-          Financial archive
-        </h2>
-        <p className="max-w-2xl text-sm leading-relaxed text-[var(--muted-foreground)]">
-          {isAdmin
-            ? "Month-by-month posture with revenue, full expenses, payroll, and payout controls."
-            : "Month-by-month shop revenue and daily operational expenses. Payroll, rent, and profit are admin-only."}
-        </p>
+      <header className="space-y-3">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="space-y-2">
+            <h2 className="font-[family-name:var(--font-serif)] text-2xl font-semibold tracking-tight text-[var(--foreground)] md:text-3xl">
+              Financial archive
+            </h2>
+            <p className="max-w-2xl text-sm leading-relaxed text-[var(--muted-foreground)]">
+              {isAdmin
+                ? "Month-by-month posture with revenue, full expenses, payroll, and payout controls."
+                : "Month-by-month shop revenue and daily operational expenses. Payroll, rent, and profit are admin-only."}
+            </p>
+          </div>
+          {isAdmin ? (
+            <Link
+              href="/barbershop/finance/commission-payroll"
+              className={buttonVariants({ className: "rounded-full" })}
+            >
+              Commission payroll
+            </Link>
+          ) : null}
+        </div>
       </header>
 
       {loading ? (
@@ -280,6 +321,7 @@ export function FinanceArchive() {
             const state = normalizeFinancialMonthState(m.state);
             const revenue = revenueFor(m);
             const expenses = expensesFor(m);
+            const netProfit = isAdmin ? netProfitFor(m) : null;
             return (
               <button
                 key={m.id}
@@ -289,7 +331,7 @@ export function FinanceArchive() {
                   setOpen(true);
                 }}
                 className={cn(
-                  "rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--card)] p-5 text-left shadow-[var(--shadow-card)] transition-[transform,box-shadow] hover:-translate-y-0.5 hover:shadow-[var(--shadow-elevated)]",
+                  "flex h-full flex-col rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--card)] p-5 text-left shadow-[var(--shadow-card)] transition-[transform,box-shadow] hover:-translate-y-0.5 hover:shadow-[var(--shadow-elevated)]",
                   state === "locked" && "opacity-95",
                   m.is_current && "ring-1 ring-emerald-500/25",
                 )}
@@ -316,7 +358,7 @@ export function FinanceArchive() {
                         ? "Operational"
                         : "—"}
                 </p>
-                <div className="mt-4 space-y-1.5 border-t border-[var(--border)] pt-3 text-xs">
+                <div className="mt-auto space-y-1.5 border-t border-[var(--border)] pt-3 text-xs">
                   <div className="flex justify-between gap-2">
                     <span className="text-[var(--muted-foreground)]">Revenue</span>
                     <span className="tabular-nums text-[var(--foreground)]">
@@ -331,6 +373,14 @@ export function FinanceArchive() {
                       {expenses != null ? formatNaira(expenses) : "—"}
                     </span>
                   </div>
+                  {isAdmin ? (
+                    <div className="flex justify-between gap-2">
+                      <span className="text-[var(--muted-foreground)]">Net profit</span>
+                      <span className="tabular-nums text-[var(--foreground)]">
+                        {netProfit != null ? formatNaira(netProfit) : "—"}
+                      </span>
+                    </div>
+                  ) : null}
                   {isAdmin ? (
                     <div className="flex justify-between gap-2 pt-1">
                       <span className="text-[var(--muted-foreground)]">Payout</span>
@@ -353,98 +403,43 @@ export function FinanceArchive() {
       )}
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent>
+        <DialogContent className="max-h-[90vh] w-[min(100%,42rem)] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>
               {active ? monthLabel(active.year, active.month) : "Month"}
             </DialogTitle>
           </DialogHeader>
           <DialogBody>
-            {active ? (
-              <div className="space-y-4">
+            {active && activeMetrics ? (
+              <div className="space-y-6">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <FinancialMonthStatusPill state={active.state} />
                   <p className="text-xs text-[var(--muted-foreground)]">{periodSubline}</p>
                 </div>
 
-                <div
-                  className={cn(
-                    "grid gap-3",
-                    isAdmin ? "sm:grid-cols-3" : "sm:grid-cols-2 lg:grid-cols-4",
-                  )}
-                >
-                  <Card>
-                    <CardContent className="space-y-1 p-4 pt-4">
-                      <p className="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">
-                        Total revenue
-                      </p>
-                      <p className="text-lg font-semibold tabular-nums">
-                        {revenueFor(active) != null ? formatNaira(revenueFor(active)!) : "—"}
-                      </p>
-                    </CardContent>
-                  </Card>
-                  {isAdmin ? (
-                    <>
-                      <Card>
-                        <CardContent className="space-y-1 p-4 pt-4">
-                          <p className="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">
-                            Commission total
-                          </p>
-                          <p className="text-lg font-semibold tabular-nums">
-                            {formatNaira(totalCommission)}
-                          </p>
-                        </CardContent>
-                      </Card>
-                      <Card>
-                        <CardContent className="space-y-1 p-4 pt-4">
-                          <p className="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">
-                            Unpaid items
-                          </p>
-                          <p className="text-lg font-semibold tabular-nums text-amber-800 dark:text-amber-200">
-                            {unpaidCount}
-                          </p>
-                        </CardContent>
-                      </Card>
-                    </>
-                  ) : (
-                    <>
-                      <Card>
-                        <CardContent className="space-y-1 p-4 pt-4">
-                          <p className="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">
-                            Services
-                          </p>
-                          <p className="text-lg font-semibold tabular-nums">
-                            {servicesRevenueFor(active) != null
-                              ? formatNaira(servicesRevenueFor(active)!)
-                              : "—"}
-                          </p>
-                        </CardContent>
-                      </Card>
-                      <Card>
-                        <CardContent className="space-y-1 p-4 pt-4">
-                          <p className="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">
-                            Product sales
-                          </p>
-                          <p className="text-lg font-semibold tabular-nums">
-                            {productRevenueFor(active) != null
-                              ? formatNaira(productRevenueFor(active)!)
-                              : "—"}
-                          </p>
-                        </CardContent>
-                      </Card>
-                      <Card>
-                        <CardContent className="space-y-1 p-4 pt-4">
-                          <p className="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]">
-                            Operational expenses
-                          </p>
-                          <p className="text-lg font-semibold tabular-nums">
-                            {expensesFor(active) != null ? formatNaira(expensesFor(active)!) : "—"}
-                          </p>
-                        </CardContent>
-                      </Card>
-                    </>
-                  )}
-                </div>
+                <FinancialMonthSummaryGrid
+                  metrics={activeMetrics}
+                  variant={isAdmin ? "admin" : "manager"}
+                />
+
+                {isAdmin ? (
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <SummaryMetricCard
+                      label="Unpaid commission items"
+                      value={String(unpaidCount)}
+                      tone={unpaidCount > 0 ? "negative" : "muted"}
+                      hint="Commission statements awaiting payout"
+                      className="h-full"
+                    />
+                    <SummaryMetricCard
+                      label="Payout posture"
+                      value={payoutState.label}
+                      tone="default"
+                      hint={financialMonthStatusLabel(active.state)}
+                      className="h-full"
+                    />
+                  </div>
+                ) : null}
 
                 <p className="text-sm text-[var(--muted-foreground)]">
                   Status:{" "}
@@ -485,33 +480,55 @@ export function FinanceArchive() {
                 />
 
                 {isAdmin ? (
-                <div className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--card)]">
-                  <div className="flex items-center justify-between gap-3 border-b border-[var(--border)] px-4 py-3">
-                    <p className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
-                      Commission statements
-                    </p>
-                    <Button type="button" size="sm" variant="outline" className="rounded-full" onClick={() => void load()}>
-                      Refresh
-                    </Button>
-                  </div>
-                  {activeStatements.length === 0 ? (
-                    <div className="px-4 py-8 text-center text-sm text-[var(--muted-foreground)]">
-                      No commission statements recorded for this month yet.
+                  <div className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--card)]">
+                    <div className="flex items-center justify-between gap-3 border-b border-[var(--border)] px-4 py-3">
+                      <p className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
+                        Commission statements
+                      </p>
+                      <div className="flex gap-2">
+                        <Link
+                          href={`/barbershop/finance/commission-payroll?year=${active.year}&month=${active.month}`}
+                          className={buttonVariants({
+                            variant: "outline",
+                            size: "sm",
+                            className: "rounded-full",
+                          })}
+                        >
+                          Payroll summary
+                        </Link>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="rounded-full"
+                          onClick={() => void load()}
+                        >
+                          Refresh
+                        </Button>
+                      </div>
                     </div>
-                  ) : (
-                    <ul className="divide-y divide-[var(--border)]">
-                      {activeStatements.map((s) => (
-                        <li key={s.id} className="flex flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-                          <div className="min-w-0">
-                            <p className="text-sm font-medium text-[var(--foreground)]">
-                              Barber · {s.user_id}
-                            </p>
-                            <p className="mt-0.5 text-xs text-[var(--muted-foreground)]">
-                              {formatNaira(Number(s.commission_amount))} · {s.payout_state}
-                              {s.payout_payment_date ? ` · paid ${new Date(s.payout_payment_date).toLocaleDateString("en-NG")}` : ""}
-                            </p>
-                          </div>
-                          {isAdmin ? (
+                    {activeStatements.length === 0 ? (
+                      <div className="px-4 py-8 text-center text-sm text-[var(--muted-foreground)]">
+                        No commission statements recorded for this month yet.
+                      </div>
+                    ) : (
+                      <ul className="divide-y divide-[var(--border)]">
+                        {activeStatements.map((s) => (
+                          <li
+                            key={s.id}
+                            className="flex flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
+                          >
+                            <div className="min-w-0">
+                              <p className="text-sm font-medium text-[var(--foreground)]">
+                                Barber · {s.user_id}
+                              </p>
+                              <p className="mt-0.5 text-xs text-[var(--muted-foreground)]">
+                                {formatNaira(Number(s.commission_amount))} · {s.payout_state}
+                                {s.payout_payment_date
+                                  ? ` · paid ${new Date(s.payout_payment_date).toLocaleDateString("en-NG")}`
+                                  : ""}
+                              </p>
+                            </div>
                             <div className="flex gap-2">
                               <Button
                                 type="button"
@@ -527,12 +544,11 @@ export function FinanceArchive() {
                                 Mark paid
                               </Button>
                             </div>
-                          ) : null}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
                 ) : null}
               </div>
             ) : null}
@@ -548,17 +564,37 @@ export function FinanceArchive() {
           <DialogBody className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="pay-date">Payment date</Label>
-              <Input id="pay-date" type="date" value={paymentDate} onChange={(e) => setPaymentDate(e.target.value)} />
+              <Input
+                id="pay-date"
+                type="date"
+                value={paymentDate}
+                onChange={(e) => setPaymentDate(e.target.value)}
+              />
             </div>
             <div className="space-y-2">
               <Label htmlFor="pay-by">Paid by</Label>
-              <Input id="pay-by" value={paidBy} onChange={(e) => setPaidBy(e.target.value)} placeholder="e.g. Zenith transfer / Ops team" />
+              <Input
+                id="pay-by"
+                value={paidBy}
+                onChange={(e) => setPaidBy(e.target.value)}
+                placeholder="e.g. Zenith transfer / Ops team"
+              />
             </div>
             <div className="space-y-2">
               <Label htmlFor="pay-note">Note (optional)</Label>
-              <Input id="pay-note" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Optional context for audit" />
+              <Input
+                id="pay-note"
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                placeholder="Optional context for audit"
+              />
             </div>
-            <Button type="button" className="w-full rounded-full bg-[var(--foreground)] text-[var(--background)]" disabled={saving} onClick={() => void submitMarkPaid()}>
+            <Button
+              type="button"
+              className="w-full rounded-full bg-[var(--foreground)] text-[var(--background)]"
+              disabled={saving}
+              onClick={() => void submitMarkPaid()}
+            >
               {saving ? "Saving…" : "Confirm paid"}
             </Button>
           </DialogBody>
