@@ -172,6 +172,8 @@ export function BarberOperationsDashboard() {
           attendanceDeductionsTotal: deductionsTotal,
           lateDeductionsTotal: Number(s.attendance_late_deductions_total ?? 0),
           absenceDeductionsTotal: Number(s.attendance_absence_deductions_total ?? 0),
+          teamAdvancesTotal: Number(s.team_advances_total ?? 0),
+          otherDeductionsTotal: Number(s.other_payroll_deductions_total ?? 0),
         }),
       );
     } catch (e) {

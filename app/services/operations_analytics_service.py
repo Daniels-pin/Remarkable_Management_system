@@ -279,6 +279,12 @@ def financial_snapshot(
     inventory_value = inventory_service.inventory_value_total(db)
     low_stock_count = len(inventory_service.low_stock_products(db, limit=500))
 
+    from app.services import personal_consumption_service
+
+    pc_totals = personal_consumption_service.consumption_totals_for_datetime_range(
+        db, start=start, end=end
+    )
+
     return {
         "total_revenue": str(total_revenue),
         "services_revenue": str(services_revenue),
@@ -289,6 +295,7 @@ def financial_snapshot(
         "product_profit": str(product_profit),
         "inventory_value": str(inventory_value),
         "low_stock_count": low_stock_count,
+        **pc_totals,
         "total_expenses": str(total_expenses),
         "operational_expenses": str(operational_expenses),
         "rent_expenses": str(rent_expenses),

@@ -17,6 +17,8 @@ from app.core.exceptions import ConflictError, ForbiddenError, NotFoundError, Va
 from app.models.barber_sequence_counter import BarberSequenceCounter
 from app.models.shop_ledger_sequence_counter import ShopLedgerSequenceCounter
 from app.models.enums import (
+    FinancialMonthState,
+    GracePeriodCorrectionAction,
     LedgerEntryType,
     LedgerReconciliationStatus,
     LedgerRecordStream,
@@ -32,9 +34,11 @@ from app.models.user import User
 from app.services import audit_service, catalog_service
 from app.services.business_time import barber_may_edit_entry, business_date_for_instant, shop_tz
 from app.services.financial_month_util import (
+    get_financial_month_by_id,
     require_financial_month_for_new_entry,
     require_writable_month_for_entry,
 )
+from app.services import grace_period_service
 
 logger = logging.getLogger(__name__)
 
@@ -1377,6 +1381,61 @@ def upsert_manager_row_for_employee_index(
     return row
 
 
+def _ledger_entry_snapshot(row: LedgerEntry) -> dict[str, Any]:
+    return {
+        "amount": str(row.amount),
+        "entry_type": str(row.entry_type),
+        "record_stream": str(row.record_stream) if row.record_stream else None,
+        "reconciliation_status": str(row.reconciliation_status) if row.reconciliation_status else None,
+        "payment_method": str(row.payment_method) if row.payment_method else None,
+        "record_lifecycle": str(row.record_lifecycle),
+        "barber_sequence_index": row.barber_sequence_index,
+    }
+
+
+def _grace_immediate_service_void_allowed(db: Session, row: LedgerEntry, actor: User) -> bool:
+    """During grace period, managers/admins may void non-matched services immediately."""
+    if actor.role not in {UserRole.MANAGER, UserRole.ADMIN}:
+        return False
+    fm = get_financial_month_by_id(db, row.financial_month_id)
+    if fm is None or fm.state != FinancialMonthState.GRACE_PERIOD:
+        return False
+    employee, manager = paired_rows_for_service(db, row)
+    comparison = _pair_reconciliation_status(employee, manager)
+    return comparison != "matched"
+
+
+def _maybe_record_grace_correction_for_month(
+    db: Session,
+    *,
+    fm: FinancialMonth | None,
+    actor: User,
+    action: GracePeriodCorrectionAction,
+    entity_type: str,
+    entity_id: str,
+    reason: str,
+    previous_value: dict[str, Any] | None = None,
+    new_value: dict[str, Any] | None = None,
+    impersonator_id: uuid.UUID | None = None,
+    ip_address: str | None = None,
+) -> None:
+    if fm is None or not grace_period_service.grace_correction_allowed(fm, actor):
+        return
+    grace_period_service.record_grace_period_correction(
+        db,
+        financial_month_id=fm.id,
+        action=action,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        reason=reason,
+        actor=actor,
+        previous_value=previous_value,
+        new_value=new_value,
+        impersonator_id=impersonator_id,
+        ip_address=ip_address,
+    )
+
+
 def match_pending_employee_entry(
     db: Session,
     *,
@@ -1402,6 +1461,13 @@ def match_pending_employee_entry(
         )
     if employee_row.entry_type != LedgerEntryType.SERVICE:
         raise ValidationAppError("Only service entries reconcile.", code="LEDGER_WRONG_TYPE")
+
+    fm = require_writable_month_for_entry(
+        db,
+        financial_month_id=employee_row.financial_month_id,
+        actor=manager,
+        grace_operational=True,
+    )
 
     existing_mgr = find_manager_row_at_index(
         db,
@@ -1430,6 +1496,22 @@ def match_pending_employee_entry(
     db.add(mgr)
     db.add(employee_row)
     db.flush()
+
+    _maybe_record_grace_correction_for_month(
+        db,
+        fm=fm,
+        actor=manager,
+        action=GracePeriodCorrectionAction.RECONCILIATION_MATCH,
+        entity_type="ledger_entry",
+        entity_id=str(employee_row.id),
+        reason="Grace period reconciliation match",
+        previous_value={"comparison_status": "missing_manager_entry"},
+        new_value={
+            "comparison_status": "matched",
+            "manager_entry_id": str(mgr.id),
+            "payment_method": str(payment_method),
+        },
+    )
 
     audit_service.write_audit_log(
         db,
@@ -1703,6 +1785,13 @@ def resolve_mismatch_use_employee_amount(
     if employee_row is None or employee_row.record_stream != LedgerRecordStream.EMPLOYEE:
         raise NotFoundError("Employee entry not found.", code="LEDGER_NOT_FOUND")
 
+    fm = require_writable_month_for_entry(
+        db,
+        financial_month_id=employee_row.financial_month_id,
+        actor=manager,
+        grace_operational=True,
+    )
+
     mgr = find_manager_row_at_index(
         db,
         barber_user_id=employee_row.employee_user_id,  # type: ignore[arg-type]
@@ -1712,10 +1801,30 @@ def resolve_mismatch_use_employee_amount(
     if mgr is None:
         raise NotFoundError("Manager entry not found for this index.", code="MANAGER_ROW_MISSING")
 
+    previous_mgr_amount = str(mgr.amount)
     mgr.amount = employee_row.amount
     db.add(mgr)
     apply_auto_match_if_eligible(db, employee=employee_row, manager=mgr)
     db.flush()
+
+    _maybe_record_grace_correction_for_month(
+        db,
+        fm=fm,
+        actor=manager,
+        action=GracePeriodCorrectionAction.RECONCILIATION_RESOLVE,
+        entity_type="ledger_entry",
+        entity_id=str(employee_row.id),
+        reason="Grace period mismatch resolved using employee amount",
+        previous_value={
+            "manager_amount": previous_mgr_amount,
+            "employee_amount": str(employee_row.amount),
+            "comparison_status": "mismatch",
+        },
+        new_value={
+            "manager_amount": str(mgr.amount),
+            "comparison_status": "matched",
+        },
+    )
     return employee_row, mgr
 
 
@@ -2089,6 +2198,8 @@ def correct_matched_service_payment_method(
     if not trimmed_reason:
         raise ValidationAppError("Reason is required.", code="REASON_REQUIRED")
 
+    fm = get_financial_month_by_id(db, manager_row.financial_month_id)
+
     adjustment = LedgerPaymentMethodAdjustment(
         ledger_entry_id=manager_row.id,
         original_method=current,
@@ -2115,6 +2226,19 @@ def correct_matched_service_payment_method(
             "reason": trimmed_reason,
             "adjustment_id": str(adjustment.id),
         },
+        ip_address=ip_address,
+    )
+    _maybe_record_grace_correction_for_month(
+        db,
+        fm=fm,
+        actor=actor,
+        action=GracePeriodCorrectionAction.PAYMENT_METHOD,
+        entity_type="ledger_entry",
+        entity_id=str(manager_row.id),
+        reason=trimmed_reason,
+        previous_value={"payment_method": str(current)},
+        new_value={"payment_method": str(new_payment_method)},
+        impersonator_id=impersonator_id,
         ip_address=ip_address,
     )
     return manager_row
@@ -2298,6 +2422,7 @@ def _void_by_manager(
 ) -> LedgerEntry:
     """Sales/expenses void immediately. Service voids may require employee confirmation."""
     if row.entry_type in (LedgerEntryType.SALE, LedgerEntryType.EXPENSE):
+        previous = _ledger_entry_snapshot(row)
         _finalize_void(
             db,
             row=row,
@@ -2310,6 +2435,25 @@ def _void_by_manager(
             from app.services import inventory_service
 
             inventory_service.restore_stock_for_voided_sale(db, ledger_entry=row, actor=actor)
+        fm = get_financial_month_by_id(db, row.financial_month_id)
+        action = (
+            GracePeriodCorrectionAction.INVENTORY_VOID
+            if row.entry_type == LedgerEntryType.SALE
+            else GracePeriodCorrectionAction.VOID
+        )
+        _maybe_record_grace_correction_for_month(
+            db,
+            fm=fm,
+            actor=actor,
+            action=action,
+            entity_type="ledger_entry",
+            entity_id=str(row.id),
+            reason=reason,
+            previous_value=previous,
+            new_value={"record_lifecycle": str(RecordLifecycleState.DELETED), "voided": True},
+            impersonator_id=impersonator_id,
+            ip_address=ip_address,
+        )
         db.flush()
         return row
 
@@ -2320,6 +2464,33 @@ def _void_by_manager(
     employee_row = employee if employee is not None else (
         row if row.record_stream == LedgerRecordStream.EMPLOYEE else None
     )
+
+    if _grace_immediate_service_void_allowed(db, row, actor):
+        anchor = employee_row if employee_row is not None else row
+        previous = _ledger_entry_snapshot(anchor)
+        _void_active_service_pair(
+            db,
+            anchor_row=anchor,
+            actor=actor,
+            reason=reason,
+            impersonator_id=impersonator_id,
+            ip_address=ip_address,
+        )
+        fm = get_financial_month_by_id(db, anchor.financial_month_id)
+        _maybe_record_grace_correction_for_month(
+            db,
+            fm=fm,
+            actor=actor,
+            action=GracePeriodCorrectionAction.VOID,
+            entity_type="ledger_entry",
+            entity_id=str(anchor.id),
+            reason=reason,
+            previous_value=previous,
+            new_value={"record_lifecycle": str(RecordLifecycleState.DELETED), "voided": True},
+            impersonator_id=impersonator_id,
+            ip_address=ip_address,
+        )
+        return anchor
 
     if employee_row is None:
         _void_active_service_pair(
@@ -2470,6 +2641,7 @@ def update_manager_ledger_entry(
     sale_category_id: uuid.UUID | None,
     expense_category_id: uuid.UUID | None,
     note: str | None,
+    reason: str | None = None,
 ) -> LedgerEntry:
     if actor.role not in {UserRole.MANAGER, UserRole.ADMIN}:
         raise ForbiddenError("Managers or admins only.", code="FORBIDDEN")
@@ -2479,18 +2651,33 @@ def update_manager_ledger_entry(
         raise NotFoundError("Entry not found.", code="LEDGER_NOT_FOUND")
     _assert_entry_mutable_for_void_or_edit(row)
 
-    require_writable_month_for_entry(
+    fm = require_writable_month_for_entry(
         db,
         financial_month_id=row.financial_month_id,
         actor=actor,
         grace_operational=True,
     )
 
+    in_grace = fm.state == FinancialMonthState.GRACE_PERIOD
+    if in_grace and grace_period_service.grace_correction_allowed(fm, actor):
+        trimmed_reason = (reason or "").strip()
+        if not trimmed_reason:
+            raise ValidationAppError(
+                "Reason is required for grace period corrections.",
+                code="REASON_REQUIRED",
+            )
+    else:
+        trimmed_reason = None
+
+    previous_snapshot = _ledger_entry_snapshot(row) if in_grace else None
+    edits: dict[str, Any] = {}
+
     if amount is not None:
         if amount <= 0:
             raise ValidationAppError("Amount must be positive.", code="INVALID_AMOUNT")
         old = row.amount
         row.amount = amount
+        edits["amount"] = {"from": str(old), "to": str(amount)}
         audit_service.write_audit_log(
             db,
             actor_user_id=actor.id,
@@ -2506,23 +2693,54 @@ def update_manager_ledger_entry(
     if row.entry_type == LedgerEntryType.SERVICE:
         if service_type_id is not None:
             catalog_service.assert_service_type_selectable(db, service_type_id)
+            if service_type_id != row.service_type_id:
+                edits["service_type_id"] = {
+                    "from": str(row.service_type_id) if row.service_type_id else None,
+                    "to": str(service_type_id),
+                }
             row.service_type_id = service_type_id
     elif row.entry_type == LedgerEntryType.SALE:
         if sale_category_id is not None:
             catalog_service.assert_sale_category_selectable(db, sale_category_id)
+            if sale_category_id != row.sale_category_id:
+                edits["sale_category_id"] = {
+                    "from": str(row.sale_category_id) if row.sale_category_id else None,
+                    "to": str(sale_category_id),
+                }
             row.sale_category_id = sale_category_id
     elif row.entry_type == LedgerEntryType.EXPENSE:
         if expense_category_id is not None:
             catalog_service.assert_expense_category_selectable(db, expense_category_id)
+            if expense_category_id != row.expense_category_id:
+                edits["expense_category_id"] = {
+                    "from": str(row.expense_category_id) if row.expense_category_id else None,
+                    "to": str(expense_category_id),
+                }
             row.expense_category_id = expense_category_id
 
-    if note is not None:
+    if note is not None and note != row.note:
+        edits["note"] = {"from": row.note, "to": note}
         row.note = note
 
     db.add(row)
     db.flush()
     if row.entry_type == LedgerEntryType.SERVICE:
         try_auto_match_for_service_row(db, row)
+
+    if in_grace and edits and trimmed_reason:
+        _maybe_record_grace_correction_for_month(
+            db,
+            fm=fm,
+            actor=actor,
+            action=GracePeriodCorrectionAction.EDIT,
+            entity_type="ledger_entry",
+            entity_id=str(row.id),
+            reason=trimmed_reason,
+            previous_value=previous_snapshot,
+            new_value={**_ledger_entry_snapshot(row), "edits": edits},
+            impersonator_user_id=impersonator_id,
+            ip_address=ip_address,
+        )
     return row
 
 

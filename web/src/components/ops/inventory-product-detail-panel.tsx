@@ -25,6 +25,20 @@ import { InventoryProductFormDialog } from "@/components/ops/inventory-product-f
 
 type Props = { productId: string };
 
+const MOVEMENT_TYPE_LABELS: Record<string, string> = {
+  opening: "Stock in (opening)",
+  stock_in: "Stock in",
+  sale: "Sale",
+  team_advance: "Team advance",
+  personal_consumption: "Personal consumption",
+  void_restore: "Void restore",
+  adjustment: "Stock adjustment",
+};
+
+function formatMovementType(type: string): string {
+  return MOVEMENT_TYPE_LABELS[type] ?? type.replace(/_/g, " ");
+}
+
 export function InventoryProductDetailPanel({ productId }: Props) {
   const { session } = useAuth();
   const isAdmin = session?.role === "admin";
@@ -368,7 +382,7 @@ export function InventoryProductDetailPanel({ productId }: Props) {
                         })
                       : "—"}
                   </td>
-                  <td className="px-3 py-2 capitalize">{m.movement_type.replace(/_/g, " ")}</td>
+                  <td className="px-3 py-2">{formatMovementType(m.movement_type)}</td>
                   <td className="px-3 py-2 text-right tabular-nums">
                     {m.quantity_delta > 0 ? `+${m.quantity_delta}` : m.quantity_delta}
                   </td>

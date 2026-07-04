@@ -132,6 +132,37 @@ class InventoryStockMovementType(StrEnum):
 
     STOCK_IN = "stock_in"
     SALE = "sale"
+    TEAM_ADVANCE = "team_advance"
+    PERSONAL_CONSUMPTION = "personal_consumption"
     VOID_RESTORE = "void_restore"
     ADJUSTMENT = "adjustment"
     OPENING = "opening"
+
+
+class TeamAdvanceType(StrEnum):
+    CASH = "cash"
+    PRODUCT = "product"
+
+
+class TeamAdvanceStatus(StrEnum):
+    OUTSTANDING = "outstanding"
+    DEDUCTED = "deducted"
+    VOIDED = "voided"
+
+
+class PersonalConsumptionStatus(StrEnum):
+    ACTIVE = "active"
+    VOIDED = "voided"
+
+
+class GracePeriodCorrectionAction(StrEnum):
+    """Audited operational correction during month-end grace period."""
+
+    VOID = "void"
+    EDIT = "edit"
+    PAYMENT_METHOD = "payment_method"
+    RECONCILIATION_MATCH = "reconciliation_match"
+    RECONCILIATION_RESOLVE = "reconciliation_resolve"
+    TEAM_ADVANCE_VOID = "team_advance_void"
+    INVENTORY_VOID = "inventory_void"
+    PERSONAL_CONSUMPTION_VOID = "personal_consumption_void"

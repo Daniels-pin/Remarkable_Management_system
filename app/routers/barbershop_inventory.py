@@ -243,20 +243,31 @@ def inventory_summary(
     all_time = inventory_service.product_sales_totals_in_range(
         db, start=all_time_start, end=end
     )
+    from app.services import personal_consumption_service
+
+    pc_period = personal_consumption_service.consumption_totals_for_datetime_range(
+        db, start=start, end=end
+    )
     payload: dict = {
         "inventory_value": str(inventory_service.inventory_value_total(db)),
         "period": {
             "product_revenue": str(totals["revenue"]),
             "product_cost": str(totals["cost"]),
             "product_profit": str(totals["profit"]),
+            "personal_consumption": pc_period["personal_consumption_cost"],
         },
         "low_stock_count": len(inventory_service.low_stock_products(db, limit=500)),
+        "personal_consumption": pc_period["personal_consumption_cost"],
     }
     if actor.user.role == UserRole.ADMIN:
+        pc_all_time = personal_consumption_service.consumption_totals_for_datetime_range(
+            db, start=all_time_start, end=end
+        )
         payload["all_time"] = {
             "product_revenue": str(all_time["revenue"]),
             "product_cost": str(all_time["cost"]),
             "product_profit": str(all_time["profit"]),
+            "personal_consumption": pc_all_time["personal_consumption_cost"],
         }
     return payload
 

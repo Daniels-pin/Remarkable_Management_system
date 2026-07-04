@@ -84,6 +84,7 @@ export type FinancialSnapshot = {
   productSalesRevenue: number;
   productCost: number;
   productProfit: number;
+  personalConsumptionCost: number;
   inventoryValue: number;
   lowStockCount: number;
   totalExpenses: number;

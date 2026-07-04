@@ -1,7 +1,14 @@
 import type { FinancialMonthRow } from "@/lib/api";
 
+export type RevenuePaymentMethods = {
+  cash: number;
+  transfer: number;
+  pos: number;
+};
+
 export type FinancialMonthMetrics = {
   totalRevenue: number | null;
+  revenuePaymentMethods: RevenuePaymentMethods | null;
   serviceRevenue: number | null;
   inventoryRevenue: number | null;
   serviceNetProfit: number | null;
@@ -14,6 +21,8 @@ export type FinancialMonthMetrics = {
   payrollCommission: number | null;
   commissionTotal: number | null;
   salaryTotal: number | null;
+  teamAdvancesTotal: number | null;
+  personalConsumptionTotal: number | null;
 };
 
 function num(value: unknown): number | null {
@@ -31,6 +40,21 @@ function snapField(
   const snap = row.snapshot as Record<string, unknown> | null | undefined;
   if (snap?.[key] != null && snap[key] !== "") return num(snap[key]);
   return null;
+}
+
+function extractRevenuePaymentMethods(
+  row: FinancialMonthRow,
+): RevenuePaymentMethods | null {
+  const raw =
+    row.payment_methods ??
+    (row.snapshot as { payment_methods?: Record<string, string> } | null | undefined)
+      ?.payment_methods;
+  if (!raw || typeof raw !== "object") return null;
+  return {
+    cash: num(raw.cash) ?? 0,
+    transfer: num(raw.transfer) ?? 0,
+    pos: num(raw.pos) ?? 0,
+  };
 }
 
 export function extractFinancialMonthMetrics(
@@ -51,6 +75,7 @@ export function extractFinancialMonthMetrics(
 
   return {
     totalRevenue: num(row.total_revenue) ?? snapField(row, "total_revenue"),
+    revenuePaymentMethods: extractRevenuePaymentMethods(row),
     serviceRevenue: snapField(row, "services_revenue"),
     inventoryRevenue: snapField(row, "product_sales_revenue"),
     serviceNetProfit,
@@ -67,5 +92,8 @@ export function extractFinancialMonthMetrics(
     payrollCommission: num(row.payroll_commission) ?? snapField(row, "payroll_commission"),
     commissionTotal: extras?.commissionTotal ?? null,
     salaryTotal: extras?.salaryTotal ?? null,
+    teamAdvancesTotal: num(row.total_team_advances) ?? snapField(row, "total_team_advances"),
+    personalConsumptionTotal:
+      num(row.total_personal_consumption) ?? snapField(row, "total_personal_consumption"),
   };
 }

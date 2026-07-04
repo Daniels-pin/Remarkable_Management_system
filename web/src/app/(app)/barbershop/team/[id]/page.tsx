@@ -22,10 +22,13 @@ import {
   type ReconciliationPosture,
   getDirectoryTeamMember,
   getDirectoryTeamMemberMonthStats,
+  getDirectoryTeamMemberOperationalMonths,
   getUserAttendanceHistory,
   listCommissionStatements,
 } from "@/lib/api";
 import { formatNaira } from "@/lib/format";
+import { monthLabel } from "@/lib/financial-month";
+import { currentYearMonth, type YearMonth } from "@/lib/ledger-month";
 import { normalizePayoutBreakdown, resolveActualPayout } from "@/lib/payout";
 import { subscribePayoutUpdated } from "@/lib/payout-events";
 import { isAdmin } from "@/lib/roles";
@@ -48,6 +51,17 @@ export default function TeamMemberDetailPage() {
 
   const [loading, setLoading] = React.useState(true);
   const [profile, setProfile] = React.useState<TeamProfileVM | null>(null);
+  const [selectedMonth, setSelectedMonth] = React.useState<YearMonth>(() => currentYearMonth());
+  const [monthOptions, setMonthOptions] = React.useState<
+    Array<{ year: number; month: number; is_current?: boolean }>
+  >([]);
+
+  React.useEffect(() => {
+    if (!id) return;
+    getDirectoryTeamMemberOperationalMonths(id)
+      .then((res) => setMonthOptions(res.items ?? []))
+      .catch(() => setMonthOptions([]));
+  }, [id]);
 
   const load = React.useCallback(async () => {
     if (!id) return;
@@ -55,7 +69,7 @@ export default function TeamMemberDetailPage() {
     try {
       const [detail, monthStats] = await Promise.all([
         getDirectoryTeamMember(id),
-        getDirectoryTeamMemberMonthStats(id),
+        getDirectoryTeamMemberMonthStats(id, selectedMonth.year, selectedMonth.month),
       ]);
 
       if (!detail.found || !detail.member) {
@@ -77,12 +91,16 @@ export default function TeamMemberDetailPage() {
       const commissionPct = m.commission_pct ? Number(m.commission_pct) : 0;
       const expectedPayout = Number(monthStats.expected_payout_on_approved ?? 0);
       const deductionsTotal = Number(monthStats.attendance_deductions_total ?? 0);
+      const teamAdvancesTotal = Number(monthStats.team_advances_total ?? 0);
+      const otherDeductionsTotal = Number(monthStats.other_payroll_deductions_total ?? 0);
       const actualPayout = resolveActualPayout(
         expectedPayout,
         monthStats.actual_payout_on_approved != null
           ? Number(monthStats.actual_payout_on_approved)
           : null,
         deductionsTotal,
+        teamAdvancesTotal,
+        otherDeductionsTotal,
       );
 
       setProfile({
@@ -113,6 +131,9 @@ export default function TeamMemberDetailPage() {
               attendanceDeductionsTotal: deductionsTotal,
               lateDeductionsTotal: Number(monthStats.attendance_late_deductions_total ?? 0),
               absenceDeductionsTotal: Number(monthStats.attendance_absence_deductions_total ?? 0),
+              teamAdvancesTotal,
+              otherDeductionsTotal,
+              teamAdvanceItems: monthStats.team_advance_items,
             })
           : undefined,
         allTimeStats: {
@@ -138,7 +159,7 @@ export default function TeamMemberDetailPage() {
     } finally {
       setLoading(false);
     }
-  }, [id, adminView]);
+  }, [id, adminView, selectedMonth]);
 
   React.useEffect(() => {
     queueMicrotask(() => void load());
@@ -192,7 +213,13 @@ export default function TeamMemberDetailPage() {
           <p className="text-sm text-[var(--muted-foreground)]">Refreshing…</p>
         </div>
       ) : adminView ? (
-        <AdminTeamMemberBody profile={profile} memberId={id} />
+        <AdminTeamMemberBody
+          profile={profile}
+          memberId={id}
+          selectedMonth={selectedMonth}
+          monthOptions={monthOptions}
+          onMonthChange={setSelectedMonth}
+        />
       ) : (
         <ManagerTeamMemberBody profile={profile} memberId={id} />
       )}
@@ -243,9 +270,15 @@ function ManagerTeamMemberBody({
 function AdminTeamMemberBody({
   profile,
   memberId,
+  selectedMonth,
+  monthOptions,
+  onMonthChange,
 }: {
   profile: TeamProfileVM;
   memberId: string;
+  selectedMonth: YearMonth;
+  monthOptions: Array<{ year: number; month: number; is_current?: boolean }>;
+  onMonthChange: (value: YearMonth) => void;
 }) {
   const [statements, setStatements] = React.useState<CommissionStatementRow[]>([]);
   const [offDays, setOffDays] = React.useState<number[]>([]);
@@ -279,12 +312,42 @@ function AdminTeamMemberBody({
     paidAt: s.payout_payment_date,
   }));
 
+  const current = currentYearMonth();
+  const financeMonthTitle =
+    selectedMonth.year === current.year && selectedMonth.month === current.month
+      ? "This month"
+      : monthLabel(selectedMonth.year, selectedMonth.month);
+
+  const monthSelectOptions =
+    monthOptions.length > 0
+      ? monthOptions
+      : [{ year: selectedMonth.year, month: selectedMonth.month, is_current: true }];
+
   return (
     <div className="space-y-12">
       <TeamMemberProfileView
         profile={profile}
         variant="full"
         monthPayoutBreakdown={profile.monthPayoutBreakdown}
+        financeMonthTitle={financeMonthTitle}
+        financeMonthControls={
+          <select
+            value={`${selectedMonth.year}-${selectedMonth.month}`}
+            onChange={(e) => {
+              const [y, m] = e.target.value.split("-").map(Number);
+              onMonthChange({ year: y, month: m });
+            }}
+            className="h-8 min-w-[10rem] rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--background)] px-2.5 text-xs text-[var(--foreground)]"
+            aria-label="Financial summary month"
+          >
+            {monthSelectOptions.map((opt) => (
+              <option key={`${opt.year}-${opt.month}`} value={`${opt.year}-${opt.month}`}>
+                {monthLabel(opt.year, opt.month)}
+                {opt.is_current ? " · Current" : ""}
+              </option>
+            ))}
+          </select>
+        }
       />
       {profile.role !== "manager" ? <OperationalPostureSection profile={profile} /> : null}
 
@@ -348,8 +411,8 @@ function OperationalPostureSection({ profile }: { profile: TeamProfileVM }) {
           Financial summary
         </h3>
         <p className="text-sm text-[var(--muted-foreground)]">
-          Index reconciliation for the current month — approved totals, pending value, and mismatched
-          indexes for this team member only.
+          Index reconciliation for the selected month — approved totals, pending value, and
+          mismatched indexes for this team member only.
         </p>
       </div>
       <MonthPostureSummary

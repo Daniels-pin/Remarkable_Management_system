@@ -102,6 +102,9 @@ function CommissionDetailDialog({
               label="Absence deductions"
               value={formatNaira(Number(row.absence_deductions))}
             />
+            {Number(row.team_advances) > 0 ? (
+              <DetailRow label="Team advances" value={formatNaira(Number(row.team_advances))} />
+            ) : null}
             {Number(row.other_deductions) > 0 ? (
               <DetailRow
                 label="Other approved deductions"
@@ -146,6 +149,9 @@ function SalaryDetailDialog({
               label="Absence deductions"
               value={formatNaira(Number(row.absence_deductions))}
             />
+            {Number(row.team_advances) > 0 ? (
+              <DetailRow label="Team advances" value={formatNaira(Number(row.team_advances))} />
+            ) : null}
             {Number(row.other_deductions) > 0 ? (
               <DetailRow
                 label="Other approved deductions"
@@ -367,6 +373,7 @@ export function CommissionPayrollPanel({ embedded = false }: { embedded?: boolea
                     <th className="px-4 py-3 font-medium text-right">Expected</th>
                     <th className="px-4 py-3 font-medium text-right">Late</th>
                     <th className="px-4 py-3 font-medium text-right">Absence</th>
+                    <th className="px-4 py-3 font-medium text-right">Advances</th>
                     <th className="px-4 py-3 font-medium text-right">Other</th>
                     <th className="px-4 py-3 font-medium text-right">Final payable</th>
                     <th className="px-4 py-3 font-medium">Status</th>
@@ -396,6 +403,7 @@ export function CommissionPayrollPanel({ embedded = false }: { embedded?: boolea
                       </td>
                       <DeductionCell amount={row.late_deductions} />
                       <DeductionCell amount={row.absence_deductions} />
+                      <DeductionCell amount={row.team_advances} />
                       <DeductionCell amount={row.other_deductions} />
                       <td className="px-4 py-3 text-right tabular-nums font-semibold text-emerald-700 dark:text-emerald-300">
                         {formatNaira(Number(row.final_commission_payable))}
@@ -422,6 +430,7 @@ export function CommissionPayrollPanel({ embedded = false }: { embedded?: boolea
                   <th className="px-4 py-3 font-medium text-right">Monthly salary</th>
                   <th className="px-4 py-3 font-medium text-right">Late</th>
                   <th className="px-4 py-3 font-medium text-right">Absence</th>
+                  <th className="px-4 py-3 font-medium text-right">Advances</th>
                   <th className="px-4 py-3 font-medium text-right">Other</th>
                   <th className="px-4 py-3 font-medium text-right">Final payable</th>
                   <th className="px-4 py-3 font-medium">Status</th>
@@ -445,6 +454,7 @@ export function CommissionPayrollPanel({ embedded = false }: { embedded?: boolea
                     </td>
                     <DeductionCell amount={row.late_deductions} />
                     <DeductionCell amount={row.absence_deductions} />
+                    <DeductionCell amount={row.team_advances} />
                     <DeductionCell amount={row.other_deductions} />
                     <td className="px-4 py-3 text-right tabular-nums font-semibold text-emerald-700 dark:text-emerald-300">
                       {formatNaira(Number(row.final_salary_payable))}

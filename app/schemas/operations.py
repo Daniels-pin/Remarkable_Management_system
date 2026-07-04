@@ -75,6 +75,7 @@ class LedgerEntryUpdateBody(BaseModel):
     sale_category_id: UUID | None = None
     expense_category_id: UUID | None = None
     note: str | None = None
+    reason: str | None = Field(default=None, min_length=1)
 
 
 class PaymentMethodCorrectionBody(BaseModel):

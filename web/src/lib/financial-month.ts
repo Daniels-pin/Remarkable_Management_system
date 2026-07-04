@@ -25,6 +25,10 @@ export function financialMonthStatusTone(state: string): string {
   return "bg-[var(--muted)]/60 text-[var(--muted-foreground)]";
 }
 
+export function isGracePeriodEditable(state: string | undefined | null): boolean {
+  return normalizeFinancialMonthState(state ?? "locked") === "grace_period";
+}
+
 export function monthLabel(year: number, month: number) {
   return new Date(year, month - 1).toLocaleString("default", {
     month: "long",

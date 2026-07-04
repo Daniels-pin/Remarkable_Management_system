@@ -271,14 +271,22 @@ export type FinancialMonthRow = {
   attendance_late_deductions_total?: string;
   attendance_absence_deductions_total?: string;
   attendance_deduction_items?: AttendanceDeductionItem[];
+  team_advances_total?: string;
+  team_advance_items?: TeamAdvanceItem[];
+  other_payroll_deductions_total?: string;
   net_earnings_amount?: string;
   /** Month summary fields (admin/manager archive) */
+  total_team_advances?: string;
+  team_advances_report?: TeamAdvancesReport;
+  total_personal_consumption?: string;
+  personal_consumption_report?: PersonalConsumptionReport;
   services_revenue?: string;
   product_sales_revenue?: string;
   service_net_profit?: string;
   product_profit?: string;
   total_business_net_profit?: string;
   inventory_value?: string;
+  payment_methods?: Record<string, string>;
 };
 
 export type OperationsSummaryResponse = {
@@ -289,6 +297,7 @@ export type OperationsSummaryResponse = {
   product_sales_revenue: string;
   product_cost?: string;
   product_profit?: string;
+  personal_consumption_cost?: string;
   inventory_value?: string;
   low_stock_count?: number;
   total_expenses: string;
@@ -496,10 +505,164 @@ export function getInventorySummary(params?: {
   const q = qs.toString();
   return apiFetch<{
     inventory_value: string;
-    period: { product_revenue: string; product_cost: string; product_profit: string };
-    all_time?: { product_revenue: string; product_cost: string; product_profit: string };
+    period: { product_revenue: string; product_cost: string; product_profit: string; personal_consumption?: string };
+    all_time?: { product_revenue: string; product_cost: string; product_profit: string; personal_consumption?: string };
     low_stock_count: number;
+    personal_consumption?: string;
   }>(`/api/v1/barbershop/inventory/summary${q ? `?${q}` : ""}`);
+}
+
+export function listTeamAdvances(params?: {
+  business_date?: string;
+  year?: number;
+  month?: number;
+  employee_user_id?: string;
+  status?: TeamAdvanceItem["status"];
+  advance_type?: TeamAdvanceItem["advance_type"];
+}) {
+  const qs = new URLSearchParams();
+  if (params?.business_date) qs.set("business_date", params.business_date);
+  if (params?.year) qs.set("year", String(params.year));
+  if (params?.month) qs.set("month", String(params.month));
+  if (params?.employee_user_id) qs.set("employee_user_id", params.employee_user_id);
+  if (params?.status) qs.set("status", params.status);
+  if (params?.advance_type) qs.set("advance_type", params.advance_type);
+  const q = qs.toString();
+  return apiFetch<{ items: TeamAdvanceItem[] }>(
+    `/api/v1/barbershop/team-advances${q ? `?${q}` : ""}`,
+  );
+}
+
+export function getTeamAdvancesReport(year: number, month: number) {
+  return apiFetch<TeamAdvancesReport>(
+    `/api/v1/barbershop/team-advances/report?year=${year}&month=${month}`,
+  );
+}
+
+export function createCashTeamAdvance(body: {
+  employee_user_id: string;
+  amount: string;
+  reason: string;
+  notes?: string;
+  business_date: string;
+}) {
+  return apiFetch<TeamAdvanceItem>("/api/v1/barbershop/team-advances/cash", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function createProductTeamAdvance(body: {
+  employee_user_id: string;
+  product_id: string;
+  quantity: number;
+  reason: string;
+  notes?: string;
+  business_date: string;
+  unit_selling_price?: string;
+}) {
+  return apiFetch<TeamAdvanceItem>("/api/v1/barbershop/team-advances/product", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function voidTeamAdvance(id: string, void_reason: string) {
+  return apiFetch<TeamAdvanceItem>(`/api/v1/barbershop/team-advances/${id}/void`, {
+    method: "POST",
+    body: JSON.stringify({ void_reason }),
+  });
+}
+
+export type PersonalConsumptionItem = {
+  id: string;
+  status: "active" | "voided";
+  product_id: string;
+  product_name: string | null;
+  quantity: number;
+  unit_cost_price: string;
+  unit_selling_price: string;
+  total_cost_value: string;
+  total_selling_value: string;
+  consumed_by_user_id: string;
+  consumed_by_label: string | null;
+  recorded_by_user_id: string;
+  recorded_by_label: string | null;
+  reason: string;
+  notes: string | null;
+  business_date: string;
+  voided_by_label: string | null;
+  void_reason: string | null;
+  voided_at: string | null;
+  created_at: string | null;
+};
+
+export type PersonalConsumptionReport = {
+  year: number;
+  month: number;
+  total_cost_value: string;
+  total_selling_value: string;
+  total_personal_consumption: string;
+  record_count: number;
+};
+
+export type PersonalConsumptionConsumer = {
+  id: string;
+  role: "admin" | "manager";
+  label: string;
+};
+
+export function listPersonalConsumptions(params?: {
+  business_date?: string;
+  year?: number;
+  month?: number;
+  status?: PersonalConsumptionItem["status"];
+}) {
+  const qs = new URLSearchParams();
+  if (params?.business_date) qs.set("business_date", params.business_date);
+  if (params?.year) qs.set("year", String(params.year));
+  if (params?.month) qs.set("month", String(params.month));
+  if (params?.status) qs.set("status", params.status);
+  const q = qs.toString();
+  return apiFetch<{ items: PersonalConsumptionItem[] }>(
+    `/api/v1/barbershop/personal-consumption${q ? `?${q}` : ""}`,
+  );
+}
+
+export function listPersonalConsumptionConsumers() {
+  return apiFetch<{ items: PersonalConsumptionConsumer[] }>(
+    "/api/v1/barbershop/personal-consumption/consumers",
+  );
+}
+
+export function getPersonalConsumptionReport(year: number, month: number) {
+  return apiFetch<PersonalConsumptionReport>(
+    `/api/v1/barbershop/personal-consumption/report?year=${year}&month=${month}`,
+  );
+}
+
+export function createPersonalConsumption(body: {
+  product_id: string;
+  quantity: number;
+  consumed_by_user_id: string;
+  reason: string;
+  notes?: string;
+  business_date: string;
+}) {
+  return apiFetch<PersonalConsumptionItem>("/api/v1/barbershop/personal-consumption", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function voidPersonalConsumption(id: string, void_reason: string) {
+  return apiFetch<PersonalConsumptionItem>(
+    `/api/v1/barbershop/personal-consumption/${id}/void`,
+    {
+      method: "POST",
+      body: JSON.stringify({ void_reason }),
+    },
+  );
 }
 
 export type InventoryRecorderSalesRow = {
@@ -729,6 +892,45 @@ export type MonthPayoutBreakdown = {
   attendance_deductions_total: string;
   attendance_late_deductions_total?: string;
   attendance_absence_deductions_total?: string;
+  team_advances_total?: string;
+  team_advance_items?: TeamAdvanceItem[];
+  other_payroll_deductions_total?: string;
+  total_payroll_deductions?: string;
+};
+
+export type TeamAdvanceItem = {
+  id: string;
+  advance_type: "cash" | "product";
+  status: "outstanding" | "deducted" | "voided";
+  employee_user_id: string;
+  employee_name: string | null;
+  amount: string;
+  reason: string;
+  notes: string | null;
+  business_date: string;
+  recorded_by_user_id: string;
+  recorded_by_label: string | null;
+  product_id: string | null;
+  product_name: string | null;
+  quantity: number | null;
+  unit_cost_price: string | null;
+  unit_selling_price: string | null;
+  settlement_year: number | null;
+  settlement_month: number | null;
+  voided_by_label: string | null;
+  void_reason: string | null;
+  voided_at: string | null;
+  created_at: string | null;
+};
+
+export type TeamAdvancesReport = {
+  year: number;
+  month: number;
+  total_outstanding: string;
+  total_deducted: string;
+  total_cash_advances: string;
+  total_product_advances: string;
+  total_team_advances: string;
 };
 
 export type DirectoryTeamRow = DirectoryBarberRow & {
@@ -947,6 +1149,7 @@ export function patchBarbershopLedgerEntry(
     sale_category_id?: string;
     expense_category_id?: string;
     note?: string | null;
+    reason?: string;
   },
 ) {
   return apiFetch<LedgerRow>(`/api/v1/barbershop/ledger/${entryId}`, {
@@ -956,10 +1159,13 @@ export function patchBarbershopLedgerEntry(
 }
 
 export function voidBarbershopLedgerEntry(entryId: string, reason: string) {
-  return apiFetch<LedgerRow>(`/api/v1/barbershop/ledger/${entryId}/void`, {
-    method: "POST",
-    body: JSON.stringify({ reason }),
-  });
+  return apiFetch<LedgerRow & { void_completed_immediately?: boolean }>(
+    `/api/v1/barbershop/ledger/${entryId}/void`,
+    {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    },
+  );
 }
 
 export function correctLedgerPaymentMethod(
@@ -1053,6 +1259,9 @@ export function getDirectoryTeamMemberMonthStats(
     attendance_deductions_total?: string;
     attendance_late_deductions_total?: string;
     attendance_absence_deductions_total?: string;
+    team_advances_total?: string;
+    team_advance_items?: TeamAdvanceItem[];
+    other_payroll_deductions_total?: string;
     reconciliation_posture?: ReconciliationPosture;
   }>(`/api/v1/barbershop/directory/team/${id}/month-stats${q ? `?${q}` : ""}`);
 }
@@ -1242,6 +1451,8 @@ export type ReconciliationHistoryResponse = {
   month: number;
   is_current_month: boolean;
   read_only?: boolean;
+  grace_period_editable?: boolean;
+  month_state?: string;
   page: number;
   page_size: number;
   total: number;
@@ -1323,12 +1534,14 @@ export type CommissionPayrollRow = {
   late_deductions: string;
   absence_deductions: string;
   other_deductions: string;
+  team_advances: string;
   attendance_deductions_total: string;
   final_commission_payable: string;
   status: string;
   payout_state: string;
   statement_id: string | null;
   attendance_deduction_items?: AttendanceDeductionItem[];
+  team_advance_items?: TeamAdvanceItem[];
   attendance_waivers?: CommissionPayrollWaiverRow[];
 };
 
@@ -1341,10 +1554,12 @@ export type SalaryPayrollRow = {
   late_deductions: string;
   absence_deductions: string;
   other_deductions: string;
+  team_advances: string;
   attendance_deductions_total: string;
   final_salary_payable: string;
   status: string;
   attendance_deduction_items?: AttendanceDeductionItem[];
+  team_advance_items?: TeamAdvanceItem[];
   attendance_waivers?: CommissionPayrollWaiverRow[];
 };
 
@@ -1469,6 +1684,9 @@ export type BarberDashboardStats = {
   attendance_deductions_total?: string;
   attendance_late_deductions_total?: string;
   attendance_absence_deductions_total?: string;
+  team_advances_total?: string;
+  team_advance_items?: TeamAdvanceItem[];
+  other_payroll_deductions_total?: string;
 };
 
 export function getBarberDashboard(year?: number, month?: number) {

@@ -148,6 +148,8 @@ def _personal_month_row(
     if absences_synced:
         db.commit()
     deductions_total = Decimal(payout["attendance_deductions_total"])
+    team_advances_total = Decimal(payout["team_advances_total"])
+    other_deductions = Decimal(payout["other_payroll_deductions_total"])
     gross_earnings = Decimal(earnings) if not isinstance(earnings, Decimal) else earnings
     net_earnings = Decimal(payout["actual_payout_on_approved"])
 
@@ -174,6 +176,9 @@ def _personal_month_row(
         "attendance_deduction_items": month_deduction_summary(
             db, user_id=user.id, year=year, month=month
         )["items"],
+        "team_advances_total": str(team_advances_total),
+        "team_advance_items": payout["team_advance_items"],
+        "other_payroll_deductions_total": str(other_deductions),
         "net_earnings_amount": str(net_earnings),
         "commission_pct_at_close": str(stmt.commission_pct_at_close) if stmt else None,
         "statement_id": statement_id,

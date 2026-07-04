@@ -250,6 +250,12 @@ export function AdminOperationsDashboard() {
               hint="Stock on hand at cost price"
               tone="muted"
             />
+            <SummaryMetricCard
+              label="Personal consumption"
+              value={formatNaira(current.personalConsumptionCost)}
+              hint="Inventory taken for personal use at cost value"
+              tone="muted"
+            />
           </div>
         </div>
 

@@ -1,6 +1,7 @@
 "use client";
 
 import { SummaryMetricCard } from "@/components/ops/summary-metric-card";
+import { TotalRevenueMetricCard } from "@/components/ops/total-revenue-metric-card";
 import { formatNaira } from "@/lib/format";
 import type { FinancialMonthMetrics } from "@/lib/financial-month-metrics";
 import { cn } from "@/lib/utils";
@@ -25,10 +26,9 @@ export function FinancialMonthSummaryGrid({ metrics, variant, className }: Props
           Month summary
         </p>
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          <SummaryMetricCard
-            label="Total revenue"
-            value={metricValue(metrics.totalRevenue)}
-            hint="Combined service and inventory revenue"
+          <TotalRevenueMetricCard
+            totalRevenue={metrics.totalRevenue}
+            paymentMethods={metrics.revenuePaymentMethods}
             className="h-full"
           />
           <SummaryMetricCard
@@ -92,6 +92,18 @@ export function FinancialMonthSummaryGrid({ metrics, variant, className }: Props
                 label="Salary total"
                 value={metricValue(metrics.salaryTotal)}
                 hint="Fixed salary obligations for the month"
+                className="h-full"
+              />
+              <SummaryMetricCard
+                label="Team advances"
+                value={metricValue(metrics.teamAdvancesTotal)}
+                hint="Cash and product advances recovered via payroll"
+                className="h-full"
+              />
+              <SummaryMetricCard
+                label="Personal consumption"
+                value={metricValue(metrics.personalConsumptionTotal)}
+                hint="Inventory taken for personal use at cost value"
                 className="h-full"
               />
             </>

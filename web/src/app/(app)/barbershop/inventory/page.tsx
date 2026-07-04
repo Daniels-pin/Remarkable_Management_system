@@ -7,7 +7,7 @@ import { Layers, Package, Tag } from "lucide-react";
 
 import { BarbershopShell } from "@/components/layout/barbershop-shell";
 import { useAuth } from "@/components/providers/auth-provider";
-import { getInventorySummary, listLowStockProducts } from "@/lib/api";
+import { getInventorySummary } from "@/lib/api";
 import { formatNaira } from "@/lib/format";
 import * as React from "react";
 import { SummaryMetricCard } from "@/components/ops/summary-metric-card";
@@ -19,10 +19,23 @@ export default function InventoryHubPage() {
   const isAdmin = session?.role === "admin";
   const [summary, setSummary] = React.useState<{
     inventory_value: string;
-    period: { product_revenue: string; product_cost: string; product_profit: string };
-    all_time?: { product_revenue: string; product_cost: string; product_profit: string };
+    period: {
+      product_revenue: string;
+      product_cost: string;
+      product_profit: string;
+      personal_consumption?: string;
+    };
+    all_time?: {
+      product_revenue: string;
+      product_cost: string;
+      product_profit: string;
+      personal_consumption?: string;
+    };
+    personal_consumption?: string;
     low_stock_count: number;
   } | null>(null);
+  const [yearPc, setYearPc] = React.useState<string | null>(null);
+  const [allTimePc, setAllTimePc] = React.useState<string | null>(null);
 
   useEffect(() => {
     if (loading || !session) return;
@@ -31,10 +44,16 @@ export default function InventoryHubPage() {
 
   React.useEffect(() => {
     if (!allowed) return;
-    void Promise.all([getInventorySummary({ preset: "month" }), listLowStockProducts()]).then(
-      ([s]) => setSummary(s),
-    );
-  }, [allowed]);
+    void Promise.all([
+      getInventorySummary({ preset: "month" }),
+      isAdmin ? getInventorySummary({ preset: "year" }) : Promise.resolve(null),
+      isAdmin ? getInventorySummary({ preset: "all" }) : Promise.resolve(null),
+    ]).then(([monthSummary, yearSummary, allSummary]) => {
+      setSummary(monthSummary);
+      setYearPc(yearSummary?.personal_consumption ?? yearSummary?.period.personal_consumption ?? null);
+      setAllTimePc(allSummary?.personal_consumption ?? allSummary?.period.personal_consumption ?? null);
+    });
+  }, [allowed, isAdmin]);
 
   if (loading || !session || !allowed) {
     return (
@@ -68,6 +87,11 @@ export default function InventoryHubPage() {
                   tone="positive"
                 />
                 <SummaryMetricCard
+                  label="Personal consumption (month)"
+                  value={formatNaira(Number(summary.period.personal_consumption ?? summary.personal_consumption ?? 0))}
+                  hint="Inventory taken for personal use at cost"
+                />
+                <SummaryMetricCard
                   label="Inventory value"
                   value={formatNaira(Number(summary.inventory_value))}
                   hint="Stock on hand at cost"
@@ -78,6 +102,20 @@ export default function InventoryHubPage() {
                     value={formatNaira(Number(summary.all_time.product_profit))}
                     tone="muted"
                     hint="Lifetime inventory profit"
+                  />
+                ) : null}
+                {yearPc != null ? (
+                  <SummaryMetricCard
+                    label="Personal consumption (year)"
+                    value={formatNaira(Number(yearPc))}
+                    tone="muted"
+                  />
+                ) : null}
+                {allTimePc != null ? (
+                  <SummaryMetricCard
+                    label="Personal consumption (all time)"
+                    value={formatNaira(Number(allTimePc))}
+                    tone="muted"
                   />
                 ) : null}
               </>
@@ -110,6 +148,12 @@ export default function InventoryHubPage() {
               icon: Tag,
               title: "Sales by recorder",
               body: "Revenue and profit per admin or manager",
+            },
+            {
+              href: "/barbershop/personal-consumption",
+              icon: Tag,
+              title: "Personal consumption",
+              body: "Products taken for personal use",
             },
             {
               href: "/barbershop/daily-ledger",

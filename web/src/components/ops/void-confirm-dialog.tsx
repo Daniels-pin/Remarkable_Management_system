@@ -21,6 +21,7 @@ import { cn } from "@/lib/utils";
 export type VoidConfirmContext =
   | "team_member_service"
   | "manager_service"
+  | "grace_period_service"
   | "sale"
   | "expense";
 
@@ -54,6 +55,12 @@ const CONTEXT_WARNINGS: Record<VoidConfirmContext, string[]> = {
     "This action cannot be undone automatically.",
     "The employee tied to this index must confirm before totals are removed.",
     "Reconciliation state will update after they accept.",
+  ],
+  grace_period_service: [
+    "Grace period correction — voids immediately without employee confirmation.",
+    "Approved matched records cannot be voided; only pending or unmatched entries.",
+    "Approved revenue, commission, and salary stay unchanged for matched indexes.",
+    "A permanent audit record with your reason is stored.",
   ],
   sale: [
     "This action will void the transaction permanently from active financial calculations.",

@@ -132,3 +132,21 @@ def require_grace_or_open_month_for_reconciliation(
             return fm
     assert_month_allows_write(db, fm, actor, grace_operational=True)
     return fm
+
+
+def month_permissions_payload(
+    fm: FinancialMonth | None,
+    *,
+    is_current_open: bool,
+    actor: User,
+) -> dict[str, bool | str | None]:
+    """API flags for month-scoped operational UI."""
+    from app.services.grace_period_service import grace_correction_allowed, month_history_read_only
+
+    state = str(fm.state) if fm else "locked"
+    grace_editable = grace_correction_allowed(fm, actor) if fm is not None else False
+    return {
+        "month_state": state,
+        "grace_period_editable": grace_editable,
+        "read_only": month_history_read_only(fm, is_current_open=is_current_open, actor=actor),
+    }

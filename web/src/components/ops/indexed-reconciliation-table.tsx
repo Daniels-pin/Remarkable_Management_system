@@ -179,11 +179,11 @@ function ReconciliationRow({
     status === "employee_record_voided" ||
     row.employee?.record_lifecycle === "deleted";
   const canVoidEmployee =
-    primarySide === "employee" &&
     onVoidRequest &&
     row.employee_entry_id &&
     !employeeVoided &&
-    status !== "pending_delete_confirmation";
+    status !== "pending_delete_confirmation" &&
+    (primarySide === "employee" || (primarySide === "manager" && status !== "matched"));
   const canCorrect =
     isCorrectableMatchedService(row, canCorrectPaymentMethod) &&
     Boolean(row.manager_entry_id && onCorrectPaymentMethod);

@@ -27,6 +27,7 @@ from app.models.user import User
 from app.services.business_time import shop_tz
 from app.services import month_lifecycle_service
 from app.services import ledger_service
+from app.services.financial_month_util import get_financial_month_for_calendar_date, month_permissions_payload
 from app.services.ledger_service import (
     barber_all_time_gross_recorded,
     barber_all_time_services_count,
@@ -352,10 +353,13 @@ def team_member_reconciliation_history(
     )
     open_month = month_lifecycle_service.get_open_financial_month(db)
     is_current = open_month is not None and (y, m) == (open_month.year, open_month.month)
+    fm = get_financial_month_for_calendar_date(db, date(y, m, 1))
+    permissions = month_permissions_payload(fm, is_current_open=is_current, actor=actor.user)
     return {
         "year": y,
         "month": m,
         "is_current_month": is_current,
+        **permissions,
         "page": page,
         "page_size": page_size,
         "total": total,

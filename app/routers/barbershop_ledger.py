@@ -410,6 +410,7 @@ def update_ledger_entry(
         sale_category_id=body.sale_category_id,
         expense_category_id=body.expense_category_id,
         note=body.note,
+        reason=body.reason,
     )
     db.commit()
     db.refresh(row)
@@ -435,4 +436,6 @@ def void_ledger_entry(
     )
     db.commit()
     db.refresh(row)
-    return _enrich_row(db, row)
+    enriched = _enrich_row(db, row)
+    enriched["void_completed_immediately"] = row.record_lifecycle == RecordLifecycleState.DELETED
+    return enriched

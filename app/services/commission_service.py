@@ -10,7 +10,7 @@ from app.models.commission import MonthlyCommissionStatement
 from app.models.enums import CommissionPayoutState, FinancialMonthState, UserRole
 from app.models.financial_month import FinancialMonth
 from app.models.user import User
-from app.services import audit_service
+from app.services import audit_service, team_advance_service
 
 
 def mark_statement_paid(
@@ -43,6 +43,16 @@ def mark_statement_paid(
     row.payout_payment_date = payment_date
     row.payout_paid_by_label = paid_by_label
     row.payout_note = note
+
+    if fm is not None:
+        team_advance_service.settle_advances_for_user_month(
+            db,
+            user_id=row.user_id,
+            year=fm.year,
+            month=fm.month,
+            financial_month_id=fm.id,
+        )
+
     db.add(row)
     audit_service.write_audit_log(
         db,

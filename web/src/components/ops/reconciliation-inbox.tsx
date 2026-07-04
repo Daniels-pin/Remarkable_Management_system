@@ -191,11 +191,13 @@ export function PendingMatchSheet({
   open,
   onOpenChange,
   onMatched,
+  onVoidRequest,
 }: {
   row: ReconciliationInboxRow | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onMatched: () => void;
+  onVoidRequest?: (row: ReconciliationInboxRow) => void;
 }) {
   const [paymentMethod, setPaymentMethod] = React.useState<"cash" | "transfer" | "pos">("cash");
   const [submitting, setSubmitting] = React.useState(false);
@@ -279,13 +281,28 @@ export function PendingMatchSheet({
               {canMatch ? (
                 <div className="space-y-3">
                   {matchStep === "idle" ? (
-                    <Button
-                      type="button"
-                      className="w-full rounded-full bg-[var(--foreground)] text-[var(--background)]"
-                      onClick={() => setMatchStep("confirm")}
-                    >
-                      Match
-                    </Button>
+                    <div className="flex flex-col gap-2 sm:flex-row">
+                      <Button
+                        type="button"
+                        className="w-full rounded-full bg-[var(--foreground)] text-[var(--background)] sm:flex-1"
+                        onClick={() => setMatchStep("confirm")}
+                      >
+                        Match
+                      </Button>
+                      {onVoidRequest && employeeEntryId ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="w-full rounded-full border-red-500/30 text-red-700 dark:text-red-300 sm:flex-1"
+                          onClick={() => {
+                            onOpenChange(false);
+                            onVoidRequest(row);
+                          }}
+                        >
+                          Void duplicate
+                        </Button>
+                      ) : null}
+                    </div>
                   ) : (
                     <>
                       <div className="space-y-2">

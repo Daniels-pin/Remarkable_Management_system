@@ -15,6 +15,7 @@ export function mapOperationsSummary(raw: OperationsSummaryResponse): FinancialS
     productSalesRevenue: num(raw.product_sales_revenue),
     productCost: num(raw.product_cost ?? "0"),
     productProfit: num(raw.product_profit ?? "0"),
+    personalConsumptionCost: num(raw.personal_consumption_cost ?? "0"),
     inventoryValue: num(raw.inventory_value ?? "0"),
     lowStockCount: raw.low_stock_count ?? 0,
     totalExpenses: num(raw.total_expenses),

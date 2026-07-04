@@ -1,5 +1,7 @@
 "use client";
 
+import type { ReactNode } from "react";
+
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Card, CardContent } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
@@ -47,6 +49,7 @@ function FinanceSummaryCard({
   stats,
   payoutLabel = "Payout",
   payoutBreakdown,
+  headerExtra,
 }: {
   title: string;
   stats: {
@@ -58,6 +61,7 @@ function FinanceSummaryCard({
   };
   payoutLabel?: string;
   payoutBreakdown?: PayoutAttendanceBreakdown;
+  headerExtra?: ReactNode;
 }) {
   const metricCount =
     2 +
@@ -73,9 +77,12 @@ function FinanceSummaryCard({
   return (
     <Card>
       <CardContent className="p-5 pt-5">
-        <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
-          {title}
-        </p>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
+            {title}
+          </p>
+          {headerExtra}
+        </div>
         <div className={cn("mt-5 grid grid-cols-1 gap-5 sm:gap-4", cols)}>
           <FinanceStat label="Revenue" value={formatNaira(stats.revenue)} />
           <FinanceStat
@@ -104,6 +111,8 @@ function FinanceSummaryCard({
                 data={payoutBreakdown}
                 expectedLabel={`Expected ${payoutLabel.toLowerCase()}`}
                 actualLabel={`Actual ${payoutLabel.toLowerCase()}`}
+                penaltiesLabel="Attendance penalties"
+                advancesLabel="Team advances"
               />
             </div>
           ) : (
@@ -220,10 +229,14 @@ export function TeamMemberProfileView({
   profile,
   variant = "full",
   monthPayoutBreakdown,
+  financeMonthTitle,
+  financeMonthControls,
 }: {
   profile: TeamMemberProfile;
   variant?: "full" | "embedded";
   monthPayoutBreakdown?: PayoutAttendanceBreakdown;
+  financeMonthTitle?: string;
+  financeMonthControls?: ReactNode;
 }) {
   const payoutLabel =
     profile.role === "staff" && profile.salaryType.includes("fixed") ? "Salary" : "Payout";
@@ -234,10 +247,11 @@ export function TeamMemberProfileView({
       {profile.role !== "manager" ? (
         <div className="grid gap-4 lg:grid-cols-2">
           <FinanceSummaryCard
-            title="This month"
+            title={financeMonthTitle ?? "This month"}
             stats={profile.monthStats}
             payoutLabel={payoutLabel}
             payoutBreakdown={monthPayoutBreakdown}
+            headerExtra={financeMonthControls}
           />
           <FinanceSummaryCard
             title="All-time"

@@ -118,10 +118,14 @@ export function PersonalFinanceArchive() {
             const payout = payoutLabel(m.payout_state);
             const expected = Number(m.earnings_amount ?? 0);
             const deductions = Number(m.attendance_deductions_total ?? 0);
+            const teamAdvances = Number(m.team_advances_total ?? 0);
+            const otherDeductions = Number(m.other_payroll_deductions_total ?? 0);
             const net = resolveActualPayout(
               expected,
               m.net_earnings_amount != null ? Number(m.net_earnings_amount) : null,
               deductions,
+              teamAdvances,
+              otherDeductions,
             );
             return (
               <button
@@ -170,7 +174,15 @@ export function PersonalFinanceArchive() {
                       </span>
                     </div>
                   ) : null}
-                  {m.net_earnings_amount != null || deductions > 0 ? (
+                  {teamAdvances > 0 ? (
+                    <div className="flex justify-between gap-2">
+                      <span className="text-[var(--muted-foreground)]">Team advances</span>
+                      <span className="tabular-nums font-medium text-rose-700 dark:text-rose-300">
+                        −{formatNaira(teamAdvances)}
+                      </span>
+                    </div>
+                  ) : null}
+                  {m.net_earnings_amount != null || deductions > 0 || teamAdvances > 0 ? (
                     <div className="flex justify-between gap-2">
                       <span className="text-[var(--muted-foreground)]">{actualPayoutLabel}</span>
                       <span className="tabular-nums font-semibold text-emerald-700 dark:text-emerald-300">
@@ -231,10 +243,15 @@ export function PersonalFinanceArchive() {
                         ? Number(active.net_earnings_amount)
                         : null,
                       Number(active.attendance_deductions_total ?? 0),
+                      Number(active.team_advances_total ?? 0),
+                      Number(active.other_payroll_deductions_total ?? 0),
                     ),
                     attendanceDeductionsTotal: Number(active.attendance_deductions_total ?? 0),
                     lateDeductionsTotal: Number(active.attendance_late_deductions_total ?? 0),
                     absenceDeductionsTotal: Number(active.attendance_absence_deductions_total ?? 0),
+                    teamAdvancesTotal: Number(active.team_advances_total ?? 0),
+                    otherDeductionsTotal: Number(active.other_payroll_deductions_total ?? 0),
+                    teamAdvanceItems: active.team_advance_items,
                   }}
                   expectedLabel={expectedPayoutLabel}
                   actualLabel={actualPayoutLabel}

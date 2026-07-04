@@ -14,9 +14,12 @@ from app.models.inventory import (
 from app.models.commission import MonthlyCommissionStatement
 from app.models.financial_month import FinancialMonth, MonthReopenEvent
 from app.models.financial_month_snapshot import FinancialMonthSnapshot
+from app.models.grace_period_correction import GracePeriodCorrection
 from app.models.ledger import LedgerEntry
 from app.models.ledger_payment_method_adjustment import LedgerPaymentMethodAdjustment
 from app.models.reconciliation_timeline import ReconciliationTimelineEvent
+from app.models.personal_consumption import PersonalConsumption
+from app.models.team_advance import TeamAdvance
 from app.models.user import User, UserProfile, UserSession
 
 __all__ = [
@@ -33,13 +36,16 @@ __all__ = [
     "InventoryStockMovement",
     "FinancialMonth",
     "FinancialMonthSnapshot",
+    "GracePeriodCorrection",
     "LedgerEntry",
     "LedgerPaymentMethodAdjustment",
     "MonthlyCommissionStatement",
     "MonthReopenEvent",
+    "PersonalConsumption",
     "ReconciliationTimelineEvent",
     "SaleCategory",
     "ServiceType",
+    "TeamAdvance",
     "User",
     "UserProfile",
     "UserSession",

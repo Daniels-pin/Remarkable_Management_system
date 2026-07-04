@@ -2,6 +2,8 @@
 
 import * as React from "react";
 
+import { DailyLedgerTeamAdvances } from "@/components/ops/daily-ledger-team-advances";
+import { DailyLedgerPersonalConsumption } from "@/components/ops/daily-ledger-personal-consumption";
 import { AddEntryFab, type EntryKind } from "@/components/ops/add-entry-fab";
 import { RecordServiceFab } from "@/components/ops/record-service-fab";
 import { useAuth } from "@/components/providers/auth-provider";
@@ -64,6 +66,8 @@ import { toast } from "sonner";
 type ManagerFilter =
   | "all"
   | LedgerEntryType
+  | "team_advance"
+  | "personal_consumption"
   | "pending"
   | "mismatch";
 
@@ -74,6 +78,8 @@ const MANAGER_FILTERS: { id: ManagerFilter; label: string }[] = [
   { id: "service", label: "Services" },
   { id: "sale", label: "Sales" },
   { id: "expense", label: "Expenses" },
+  { id: "team_advance", label: "Team advance" },
+  { id: "personal_consumption", label: "Personal consumption" },
   { id: "pending", label: "Pending" },
   { id: "mismatch", label: "Mismatch" },
 ];
@@ -185,6 +191,22 @@ function emptyLedgerCopy(
         title: opts.viewingToday ? "No expenses recorded today" : "No expenses recorded for this day",
         body: "Log shop expenses here to keep the ledger complete.",
         showEntryAction: true,
+      };
+    case "team_advance":
+      return {
+        title: opts.viewingToday
+          ? "No team advances recorded today"
+          : "No team advances for this day",
+        body: "Cash and product advances taken by team members appear here.",
+        showEntryAction: false,
+      };
+    case "personal_consumption":
+      return {
+        title: opts.viewingToday
+          ? "No personal consumption recorded today"
+          : "No personal consumption for this day",
+        body: "Products taken for personal use by admin or manager appear here.",
+        showEntryAction: false,
       };
     case "pending":
       return {
@@ -560,6 +582,8 @@ export function DailyLedgerPanel() {
   const [correctionOpen, setCorrectionOpen] = React.useState(false);
 
   const entryWorkflow = isEntryWorkflowFilter(filter);
+  const teamAdvanceMode = filter === "team_advance";
+  const personalConsumptionMode = filter === "personal_consumption";
   const showManagerEntry = canAddEntry && entryWorkflow;
   const inboxMode = isInboxFilter(filter);
 
@@ -739,9 +763,10 @@ export function DailyLedgerPanel() {
   const confirmManagerVoid = async (reason: string) => {
     if (!voidTarget) return;
     try {
-      await voidBarbershopLedgerEntry(voidTarget.id, reason);
-      const msg =
-        voidContext === "manager_service"
+      const res = await voidBarbershopLedgerEntry(voidTarget.id, reason);
+      const msg = res.void_completed_immediately
+        ? "Record voided."
+        : voidContext === "manager_service"
           ? "Void request sent — employee must confirm before totals change."
           : "Record voided.";
       toast.success(msg);
@@ -787,11 +812,21 @@ export function DailyLedgerPanel() {
         />
       </div>
 
-      {!inboxMode ? (
+      {!inboxMode && !teamAdvanceMode && !personalConsumptionMode ? (
         <LedgerDateControls value={businessDate} onChange={setBusinessDate} />
       ) : null}
 
-      {inboxMode ? (
+      {!inboxMode && teamAdvanceMode ? (
+        <>
+          <LedgerDateControls value={businessDate} onChange={setBusinessDate} />
+          <DailyLedgerTeamAdvances businessDate={businessDate} canManage={canAddEntry} />
+        </>
+      ) : !inboxMode && personalConsumptionMode ? (
+        <>
+          <LedgerDateControls value={businessDate} onChange={setBusinessDate} />
+          <DailyLedgerPersonalConsumption businessDate={businessDate} canManage={canAddEntry} />
+        </>
+      ) : inboxMode ? (
         <>
           <ReconciliationInboxTable
             rows={inboxRows}
@@ -879,6 +914,22 @@ export function DailyLedgerPanel() {
         onMatched={() => {
           void loadInboxOnly();
           notifyReconciliationChanged();
+        }}
+        onVoidRequest={(row) => {
+          const entryId = row.employee_entry_id;
+          if (!entryId) return;
+          const amount = Number(row.employee_amount ?? row.amount ?? 0);
+          setVoidContext("grace_period_service");
+          setVoidTarget({
+            id: entryId,
+            index: row.index ?? 0,
+            indexLabel: row.index_label ?? undefined,
+            type: "service",
+            amount: Number.isFinite(amount) ? amount : 0,
+            description: row.service_name ?? "Service",
+            employeeName: row.employee_name,
+          });
+          setVoidOpen(true);
         }}
       />
       <MismatchDetailSheet

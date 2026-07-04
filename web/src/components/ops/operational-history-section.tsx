@@ -27,6 +27,12 @@ import { correctionTargetFromWorkspaceRow } from "@/lib/payment-method-correctio
 import { isManagerUp } from "@/lib/roles";
 import { useAuth } from "@/components/providers/auth-provider";
 import { dispatchReconciliationUpdated } from "@/lib/reconciliation-events";
+import {
+  VoidConfirmDialog,
+  type VoidConfirmContext,
+  type VoidConfirmTarget,
+} from "@/components/ops/void-confirm-dialog";
+import { voidBarbershopLedgerEntry } from "@/lib/api";
 
 export type OperationalHistoryMode = "self" | "team";
 
@@ -60,7 +66,10 @@ export function OperationalHistorySection({
   const [rows, setRows] = React.useState<ReconciliationWorkspaceRow[]>([]);
   const [total, setTotal] = React.useState(0);
   const [readOnly, setReadOnly] = React.useState(false);
+  const [gracePeriodEditable, setGracePeriodEditable] = React.useState(false);
   const [isCurrentMonth, setIsCurrentMonth] = React.useState(true);
+  const [voidTarget, setVoidTarget] = React.useState<VoidConfirmTarget | null>(null);
+  const [voidOpen, setVoidOpen] = React.useState(false);
   const [correctionTarget, setCorrectionTarget] =
     React.useState<PaymentMethodCorrectionTarget | null>(null);
   const [correctionOpen, setCorrectionOpen] = React.useState(false);
@@ -97,6 +106,7 @@ export function OperationalHistorySection({
       setRows(res.items ?? []);
       setTotal(res.total ?? 0);
       setReadOnly(Boolean(res.read_only));
+      setGracePeriodEditable(Boolean(res.grace_period_editable));
       setIsCurrentMonth(Boolean(res.is_current_month));
     } catch (e) {
       if (e instanceof ApiError) toast.error(e.message);
@@ -139,6 +149,10 @@ export function OperationalHistorySection({
           <p className="inline-flex items-center rounded-full border border-[var(--border)] bg-[var(--muted)]/30 px-3 py-1 text-[11px] font-medium tracking-wide text-[var(--muted-foreground)]">
             Read-only · {monthDisplayLabel(selectedMonth)} is historical review
           </p>
+        ) : gracePeriodEditable ? (
+          <p className="inline-flex items-center rounded-full border border-amber-500/30 bg-amber-500/10 px-3 py-1 text-[11px] font-medium tracking-wide text-amber-900 dark:text-amber-200">
+            Grace period correction window · {monthDisplayLabel(selectedMonth)}
+          </p>
         ) : isCurrentMonth ? (
           <p className="text-[11px] text-[var(--muted-foreground)]">
             Current operational month · {monthDisplayLabel(selectedMonth)}
@@ -167,6 +181,27 @@ export function OperationalHistorySection({
             : "When this employee records services or you add official lines, indexed rows appear here."
         }
         canCorrectPaymentMethod={canCorrect && mode === "team" && !readOnly}
+        onVoidRequest={
+          canCorrect && mode === "team" && gracePeriodEditable
+            ? (row) => {
+                const entryId = row.employee_entry_id ?? row.employee?.id;
+                if (!entryId) return;
+                const amount = Number(
+                  row.employee_amount ?? row.employee?.amount ?? row.amount ?? 0,
+                );
+                setVoidTarget({
+                  id: entryId,
+                  index: row.index ?? 0,
+                  indexLabel: row.index_label ?? undefined,
+                  type: "service",
+                  amount: Number.isFinite(amount) ? amount : 0,
+                  description: row.service_name ?? "Service",
+                  employeeName: row.employee_label,
+                });
+                setVoidOpen(true);
+              }
+            : undefined
+        }
         onCorrectPaymentMethod={(row) => {
           const target = correctionTargetFromWorkspaceRow(row);
           if (!target) return;
@@ -182,6 +217,30 @@ export function OperationalHistorySection({
         onCorrected={() => {
           void loadHistory();
           dispatchReconciliationUpdated();
+        }}
+      />
+
+      <VoidConfirmDialog
+        open={voidOpen}
+        onOpenChange={setVoidOpen}
+        target={voidTarget}
+        context={"grace_period_service" satisfies VoidConfirmContext}
+        onConfirm={async (reason) => {
+          if (!voidTarget) return;
+          try {
+            const res = await voidBarbershopLedgerEntry(voidTarget.id, reason);
+            toast.success(
+              res.void_completed_immediately
+                ? "Duplicate voided. Pending count updated."
+                : "Void request sent — employee must confirm before totals change.",
+            );
+            await loadHistory();
+            dispatchReconciliationUpdated();
+          } catch (e) {
+            if (e instanceof ApiError) toast.error(e.message);
+            else toast.error("Could not void record.");
+            throw e;
+          }
         }}
       />
 

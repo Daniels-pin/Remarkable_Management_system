@@ -145,8 +145,9 @@ def commission_payroll_row(
     )
     late = Decimal(payout["attendance_late_deductions_total"])
     absence = Decimal(payout["attendance_absence_deductions_total"])
-    total_deductions = Decimal(payout["attendance_deductions_total"])
-    other = max(total_deductions - late - absence, _ZERO)
+    attendance_total = Decimal(payout["attendance_deductions_total"])
+    team_advances = Decimal(payout["team_advances_total"])
+    other = Decimal(payout["other_payroll_deductions_total"])
     final_payable = Decimal(payout["actual_payout_on_approved"])
 
     waivers = _month_waivers_for_user(db, user_id=user.id, year=year, month=month)
@@ -162,8 +163,9 @@ def commission_payroll_row(
         "expected_commission": str(expected_commission),
         "late_deductions": str(late),
         "absence_deductions": str(absence),
+        "team_advances": str(team_advances),
         "other_deductions": str(other),
-        "attendance_deductions_total": str(total_deductions),
+        "attendance_deductions_total": str(attendance_total),
         "final_commission_payable": str(final_payable),
         "status": status,
         "payout_state": payout_state,
@@ -171,6 +173,7 @@ def commission_payroll_row(
         "attendance_deduction_items": month_deduction_summary(
             db, user_id=user.id, year=year, month=month
         )["items"],
+        "team_advance_items": payout["team_advance_items"],
         "attendance_waivers": waivers,
     }
 
@@ -193,8 +196,9 @@ def salary_payroll_row(
     )
     late = Decimal(payout["attendance_late_deductions_total"])
     absence = Decimal(payout["attendance_absence_deductions_total"])
-    total_deductions = Decimal(payout["attendance_deductions_total"])
-    other = max(total_deductions - late - absence, _ZERO)
+    attendance_total = Decimal(payout["attendance_deductions_total"])
+    team_advances = Decimal(payout["team_advances_total"])
+    other = Decimal(payout["other_payroll_deductions_total"])
     final_payable = Decimal(payout["actual_payout_on_approved"])
     status = "approved" if user.account_status == AccountStatus.ACTIVE else "inactive"
     waivers = _month_waivers_for_user(db, user_id=user.id, year=year, month=month)
@@ -207,13 +211,15 @@ def salary_payroll_row(
         "monthly_salary": str(monthly_salary),
         "late_deductions": str(late),
         "absence_deductions": str(absence),
+        "team_advances": str(team_advances),
         "other_deductions": str(other),
-        "attendance_deductions_total": str(total_deductions),
+        "attendance_deductions_total": str(attendance_total),
         "final_salary_payable": str(final_payable),
         "status": status,
         "attendance_deduction_items": month_deduction_summary(
             db, user_id=user.id, year=year, month=month
         )["items"],
+        "team_advance_items": payout["team_advance_items"],
         "attendance_waivers": waivers,
     }
 

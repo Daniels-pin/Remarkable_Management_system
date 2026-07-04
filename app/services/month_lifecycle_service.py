@@ -13,7 +13,7 @@ from app.models.enums import FinancialMonthState, UserRole
 from app.models.financial_month import FinancialMonth
 from app.models.financial_month_snapshot import FinancialMonthSnapshot
 from app.models.user import User
-from app.services import audit_service, operations_analytics_service
+from app.services import audit_service, operations_analytics_service, personal_consumption_service, team_advance_service
 from app.services.business_time import shop_tz
 
 GRACE_PERIOD_DAYS = 3
@@ -118,6 +118,12 @@ def lock_financial_month(
     if fm.grace_ends_at is None:
         fm.grace_ends_at = now
     db.add(fm)
+    team_advance_service.settle_advances_for_month(
+        db,
+        year=fm.year,
+        month=fm.month,
+        financial_month_id=fm.id,
+    )
     capture_month_snapshot(db, fm)
     db.flush()
     audit_service.write_audit_log(
@@ -162,6 +168,9 @@ def capture_month_snapshot(db: Session, fm: FinancialMonth) -> FinancialMonthSna
         ),
         "payout_summary": operations_analytics_service.month_payout_summary(
             db, financial_month_id=fm.id
+        ),
+        "team_advances_report": team_advance_service.month_report(
+            db, year=fm.year, month=fm.month
         ),
     }
     row = FinancialMonthSnapshot(
@@ -340,6 +349,14 @@ def serialize_month_row(
             return str(snapshot_payload.get(key, shaped.get(key, fallback)))
         return str(shaped.get(key, fallback))
 
+    def payment_methods_value() -> dict[str, str]:
+        live = shaped.get("payment_methods") or {}
+        if snapshot_payload and locked:
+            snap = snapshot_payload.get("payment_methods")
+            if isinstance(snap, dict):
+                return {str(k): str(v) for k, v in snap.items()}
+        return {str(k): str(v) for k, v in live.items()}
+
     row: dict[str, Any] = {
         "id": str(fm.id),
         "year": fm.year,
@@ -358,9 +375,16 @@ def serialize_month_row(
             "total_business_net_profit", summary_value("net_profit")
         ),
         "inventory_value": summary_value("inventory_value"),
+        "payment_methods": payment_methods_value(),
     }
     role_key = str(role)
     if role_key == UserRole.ADMIN:
+        team_advances_report = team_advance_service.month_report(
+            db, year=fm.year, month=fm.month
+        )
+        personal_consumption_report = personal_consumption_service.month_report(
+            db, year=fm.year, month=fm.month
+        )
         row.update(
             {
                 "expense_sources": expense_sources,
@@ -372,6 +396,12 @@ def serialize_month_row(
                 if snapshot_payload
                 else shaped["net_profit"],
                 "snapshot": snapshot_payload,
+                "team_advances_report": team_advances_report,
+                "total_team_advances": team_advances_report["total_team_advances"],
+                "personal_consumption_report": personal_consumption_report,
+                "total_personal_consumption": personal_consumption_report[
+                    "total_personal_consumption"
+                ],
             }
         )
     elif role_key == UserRole.MANAGER:

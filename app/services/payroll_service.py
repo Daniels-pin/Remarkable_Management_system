@@ -27,6 +27,7 @@ from app.services.attendance_service import (
     process_absences_for_user,
     resolve_attendance_start_date,
 )
+from app.services.team_advance_service import month_team_advances_total, month_team_advances_summary
 
 
 def expected_month_payout(
@@ -56,11 +57,12 @@ def net_month_payout(
     month: int,
     commission_pct: Decimal | None = None,
 ) -> Decimal:
-    """Expected payout minus attendance deductions for the month."""
+    """Expected payout minus attendance and team advance deductions for the month."""
     gross = expected_month_payout(user, settled=settled, commission_pct=commission_pct)
     summary = month_deduction_summary(db, user_id=user.id, year=year, month=month)
-    deductions = Decimal(summary["total_deductions"])
-    return max(gross - deductions, _ZERO)
+    attendance = Decimal(summary["total_deductions"])
+    team_advances = month_team_advances_total(db, user_id=user.id, year=year, month=month)
+    return max(gross - attendance - team_advances, _ZERO)
 
 
 def month_payout_breakdown(
@@ -96,8 +98,12 @@ def month_payout_breakdown(
     pct = commission_pct if commission_pct is not None else (user.commission_pct or _ZERO)
     expected = expected_month_payout(user, settled=settled, commission_pct=pct)
     attendance_summary = month_deduction_summary(db, user_id=user.id, year=year, month=month)
-    deductions = Decimal(attendance_summary["total_deductions"])
-    actual = max(expected - deductions, _ZERO)
+    attendance_deductions = Decimal(attendance_summary["total_deductions"])
+    team_advances_summary = month_team_advances_summary(db, user_id=user.id, year=year, month=month)
+    team_advances_total = Decimal(team_advances_summary["total"])
+    other_deductions = _ZERO
+    total_deductions = attendance_deductions + team_advances_total + other_deductions
+    actual = max(expected - total_deductions, _ZERO)
 
     payload = {
         "expected_payout_on_approved": str(expected),
@@ -105,6 +111,10 @@ def month_payout_breakdown(
         "attendance_deductions_total": attendance_summary["total_deductions"],
         "attendance_late_deductions_total": attendance_summary["late_deductions_total"],
         "attendance_absence_deductions_total": attendance_summary["absence_deductions_total"],
+        "team_advances_total": team_advances_summary["total"],
+        "team_advance_items": team_advances_summary["items"],
+        "other_payroll_deductions_total": str(other_deductions),
+        "total_payroll_deductions": str(total_deductions),
     }
     return payload, absences_synced + (1 if activation_backfilled else 0)
 

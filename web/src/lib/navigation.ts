@@ -3,7 +3,9 @@ import {
   Bell,
   BookOpen,
   Clock3,
+  Coffee,
   CreditCard,
+  HandCoins,
   LayoutDashboard,
   Package,
   Receipt,
@@ -63,6 +65,18 @@ export const barbershopNav: NavItem[] = [
     label: "Inventory",
     href: "/barbershop/inventory",
     icon: Package,
+    roles: managerUp,
+  },
+  {
+    label: "Team Advances",
+    href: "/barbershop/team-advances",
+    icon: HandCoins,
+    roles: managerUp,
+  },
+  {
+    label: "Personal Consumption",
+    href: "/barbershop/personal-consumption",
+    icon: Coffee,
     roles: managerUp,
   },
   {
