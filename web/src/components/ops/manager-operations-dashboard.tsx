@@ -13,7 +13,9 @@ import { mapOperationsSummary } from "@/lib/operations-analytics";
 import { EMPTY_FINANCIAL_SNAPSHOT } from "@/lib/ops-initial-state";
 import type { FinancialSnapshot } from "@/lib/ops-types";
 import { ExpenseSourceBreakdownCard } from "@/components/ops/expense-source-breakdown";
+import { CashAtHandCard } from "@/components/ops/cash-at-hand-card";
 import { toast } from "sonner";
+import { subscribeReconciliationUpdated } from "@/lib/reconciliation-events";
 
 type Preset = "today" | "week" | "month";
 
@@ -44,6 +46,12 @@ export function ManagerOperationsDashboard() {
 
   React.useEffect(() => {
     queueMicrotask(() => void loadAnalytics());
+  }, [loadAnalytics]);
+
+  React.useEffect(() => {
+    return subscribeReconciliationUpdated(() => {
+      void loadAnalytics();
+    });
   }, [loadAnalytics]);
 
   const operationalExpenses = current.operationalExpenses || current.totalExpenses;
@@ -128,28 +136,39 @@ export function ManagerOperationsDashboard() {
           variant="manager"
           className="lg:col-span-1"
         />
-        <Card className="border-[var(--border)]/90 lg:col-span-2">
-          <CardContent className="p-6 pt-6">
-            <div className="mb-6 flex flex-col gap-1 border-b border-[var(--border)] pb-5 sm:flex-row sm:items-end sm:justify-between">
-              <div>
-                <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
-                  Cash & payments
-                </p>
-                <p className="mt-1 font-[family-name:var(--font-serif)] text-xl font-semibold text-[var(--foreground)]">
-                  {formatNaira(operationalRevenue)} revenue
+        <div className="space-y-4 lg:col-span-2">
+          <Card className="border-[var(--border)]/90">
+            <CardContent className="p-6 pt-6">
+              <div className="mb-6 flex flex-col gap-1 border-b border-[var(--border)] pb-5 sm:flex-row sm:items-end sm:justify-between">
+                <div>
+                  <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
+                    Cash & payments
+                  </p>
+                  <p className="mt-1 font-[family-name:var(--font-serif)] text-xl font-semibold text-[var(--foreground)]">
+                    {formatNaira(operationalRevenue)} revenue
+                  </p>
+                </div>
+                <p className="text-sm text-[var(--muted-foreground)]">
+                  Spend tracked at{" "}
+                  <span className="font-medium text-[var(--foreground)]">
+                    {formatNaira(operationalExpenses)}
+                  </span>{" "}
+                  operational
                 </p>
               </div>
-              <p className="text-sm text-[var(--muted-foreground)]">
-                Spend tracked at{" "}
-                <span className="font-medium text-[var(--foreground)]">
-                  {formatNaira(operationalExpenses)}
-                </span>{" "}
-                operational
-              </p>
-            </div>
-            <PaymentMethodBreakdown snapshot={current} />
-          </CardContent>
-        </Card>
+              <PaymentMethodBreakdown snapshot={current} />
+            </CardContent>
+          </Card>
+          <CashAtHandCard
+            total={current.cashAtHand}
+            breakdown={current.cashAtHandBreakdown}
+            hint={
+              analyticsLoading
+                ? "Calculating till balance…"
+                : "Expected physical cash in the shop"
+            }
+          />
+        </div>
       </section>
     </div>
   );

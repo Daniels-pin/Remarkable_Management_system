@@ -23,6 +23,13 @@ export type FinancialMonthMetrics = {
   salaryTotal: number | null;
   teamAdvancesTotal: number | null;
   personalConsumptionTotal: number | null;
+  monthCashMovement: number | null;
+  monthCashMovementBreakdown: {
+    cashServices: number;
+    cashProductSales: number;
+    cashExpenses: number;
+    cashTeamAdvances: number;
+  } | null;
 };
 
 function num(value: unknown): number | null {
@@ -57,6 +64,38 @@ function extractRevenuePaymentMethods(
   };
 }
 
+function extractMonthCashMovement(row: FinancialMonthRow): {
+  monthCashMovement: number | null;
+  monthCashMovementBreakdown: FinancialMonthMetrics["monthCashMovementBreakdown"];
+} {
+  const topNet = num(row.month_cash_movement);
+  const snap = row.snapshot as
+    | {
+        month_cash_movement?: string;
+        month_cash_movement_breakdown?: Record<string, string>;
+      }
+    | null
+    | undefined;
+  const net = topNet ?? num(snap?.month_cash_movement);
+
+  const raw =
+    row.month_cash_movement_breakdown ??
+    snap?.month_cash_movement_breakdown ??
+    null;
+  if (!raw || typeof raw !== "object") {
+    return { monthCashMovement: net, monthCashMovementBreakdown: null };
+  }
+  return {
+    monthCashMovement: net,
+    monthCashMovementBreakdown: {
+      cashServices: num(raw.cash_services) ?? 0,
+      cashProductSales: num(raw.cash_product_sales) ?? 0,
+      cashExpenses: num(raw.cash_expenses) ?? 0,
+      cashTeamAdvances: num(raw.cash_team_advances) ?? 0,
+    },
+  };
+}
+
 export function extractFinancialMonthMetrics(
   row: FinancialMonthRow,
   extras?: { commissionTotal?: number | null; salaryTotal?: number | null },
@@ -72,6 +111,8 @@ export function extractFinancialMonthMetrics(
     num(row.operational_expenses) ??
     num(row.expense_sources?.operational_total) ??
     snapField(row, "operational_expenses");
+
+  const cashMovement = extractMonthCashMovement(row);
 
   return {
     totalRevenue: num(row.total_revenue) ?? snapField(row, "total_revenue"),
@@ -95,5 +136,7 @@ export function extractFinancialMonthMetrics(
     teamAdvancesTotal: num(row.total_team_advances) ?? snapField(row, "total_team_advances"),
     personalConsumptionTotal:
       num(row.total_personal_consumption) ?? snapField(row, "total_personal_consumption"),
+    monthCashMovement: cashMovement.monthCashMovement,
+    monthCashMovementBreakdown: cashMovement.monthCashMovementBreakdown,
   };
 }

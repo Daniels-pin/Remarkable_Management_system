@@ -20,7 +20,9 @@ import {
 } from "@/lib/ops-initial-state";
 import type { FinancialSnapshot } from "@/lib/ops-types";
 import { ExpenseSourceBreakdownCard } from "@/components/ops/expense-source-breakdown";
+import { CashAtHandCard } from "@/components/ops/cash-at-hand-card";
 import { toast } from "sonner";
+import { subscribeReconciliationUpdated } from "@/lib/reconciliation-events";
 
 type Preset = "today" | "week" | "month" | "year" | "all" | "custom";
 
@@ -113,6 +115,12 @@ export function AdminOperationsDashboard() {
 
   React.useEffect(() => {
     queueMicrotask(() => void loadAnalytics());
+  }, [loadAnalytics]);
+
+  React.useEffect(() => {
+    return subscribeReconciliationUpdated(() => {
+      void loadAnalytics();
+    });
   }, [loadAnalytics]);
 
   const noFinancialActivity =
@@ -308,32 +316,43 @@ export function AdminOperationsDashboard() {
           rentExpenses={current.rentExpenses}
           className="lg:col-span-1"
         />
-        <Card className="border-[var(--border)]/90 lg:col-span-2">
-          <CardContent className="p-6 pt-6">
-            <div className="mb-6 flex flex-col gap-1 border-b border-[var(--border)] pb-5 sm:flex-row sm:items-end sm:justify-between">
-              <div>
-                <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
-                  Selected period · posture
-                </p>
-                <p className="mt-1 font-[family-name:var(--font-serif)] text-xl font-semibold text-[var(--foreground)]">
-                  {formatNaira(current.totalBusinessNetProfit)} net profit
+        <div className="space-y-4 lg:col-span-2">
+          <Card className="border-[var(--border)]/90">
+            <CardContent className="p-6 pt-6">
+              <div className="mb-6 flex flex-col gap-1 border-b border-[var(--border)] pb-5 sm:flex-row sm:items-end sm:justify-between">
+                <div>
+                  <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
+                    Selected period · posture
+                  </p>
+                  <p className="mt-1 font-[family-name:var(--font-serif)] text-xl font-semibold text-[var(--foreground)]">
+                    {formatNaira(current.totalBusinessNetProfit)} net profit
+                  </p>
+                </div>
+                <p className="text-sm text-[var(--muted-foreground)]">
+                  All-time roll-up{" "}
+                  <span className="font-medium text-[var(--foreground)]">
+                    {formatNaira(allTime.totalBusinessNetProfit)}
+                  </span>
+                  {noFinancialActivity ? (
+                    <span className="mt-1 block text-xs">
+                      All-time totals stay at zero until the first ledger entry is posted.
+                    </span>
+                  ) : null}
                 </p>
               </div>
-              <p className="text-sm text-[var(--muted-foreground)]">
-                All-time roll-up{" "}
-                <span className="font-medium text-[var(--foreground)]">
-                  {formatNaira(allTime.totalBusinessNetProfit)}
-                </span>
-                {noFinancialActivity ? (
-                  <span className="mt-1 block text-xs">
-                    All-time totals stay at zero until the first ledger entry is posted.
-                  </span>
-                ) : null}
-              </p>
-            </div>
-            <PaymentMethodBreakdown snapshot={current} />
-          </CardContent>
-        </Card>
+              <PaymentMethodBreakdown snapshot={current} />
+            </CardContent>
+          </Card>
+          <CashAtHandCard
+            total={current.cashAtHand}
+            breakdown={current.cashAtHandBreakdown}
+            hint={
+              analyticsLoading
+                ? "Calculating till balance…"
+                : "All-time derived · not affected by period filter"
+            }
+          />
+        </div>
         <Card className="border-rose-500/15 bg-gradient-to-b from-rose-500/[0.06] to-transparent">
           <CardContent className="space-y-3 p-6 pt-6">
             <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">

@@ -76,6 +76,13 @@ export type ExpenseSourceBreakdown = {
   operationalTotal: number;
 };
 
+export type CashAtHandBreakdown = {
+  cashServices: number;
+  cashProductSales: number;
+  cashExpenses: number;
+  cashTeamAdvances: number;
+};
+
 export type FinancialSnapshot = {
   totalRevenue: number;
   servicesRevenue: number;
@@ -95,6 +102,8 @@ export type FinancialSnapshot = {
   totalBusinessNetProfit: number;
   expenseSources: ExpenseSourceBreakdown;
   paymentMethods: Record<PaymentMethod, number>;
+  cashAtHand: number;
+  cashAtHandBreakdown: CashAtHandBreakdown;
 };
 
 export type ActivityItem = {

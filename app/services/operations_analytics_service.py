@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
@@ -18,9 +19,12 @@ from app.models.enums import (
     LedgerRecordStream,
     PaymentMethod,
     RecordLifecycleState,
+    TeamAdvanceStatus,
+    TeamAdvanceType,
     UserRole,
 )
 from app.models.ledger import LedgerEntry
+from app.models.team_advance import TeamAdvance
 from app.services.business_time import shop_tz
 from app.services import inventory_service
 from app.services.ledger_service import (
@@ -166,6 +170,118 @@ def _active_in_range(db: Session, start: datetime, end: datetime):
         LedgerEntry.occurred_at >= start,
         LedgerEntry.occurred_at <= end,
     )
+
+
+def _active_ledger_rows(db: Session):
+    return db.query(LedgerEntry).filter(
+        LedgerEntry.record_lifecycle == RecordLifecycleState.ACTIVE,
+    )
+
+
+def _active_ledger_for_month(db: Session, financial_month_id: uuid.UUID):
+    return _active_ledger_rows(db).filter(
+        LedgerEntry.financial_month_id == financial_month_id,
+    )
+
+
+def _cash_movement_breakdown(
+    db: Session,
+    ledger_base,
+    *,
+    team_advance_filter,
+) -> dict[str, str]:
+    cash_services = _ZERO
+    for row in (
+        ledger_base.filter(
+            LedgerEntry.entry_type == LedgerEntryType.SERVICE,
+            LedgerEntry.record_stream == LedgerRecordStream.MANAGER,
+            LedgerEntry.payment_method == PaymentMethod.CASH,
+        ).all()
+    ):
+        if row_counts_toward_official_revenue(db, row):
+            cash_services += _decimal(row.amount)
+
+    cash_product_sales = _decimal(
+        ledger_base.filter(
+            LedgerEntry.entry_type == LedgerEntryType.SALE,
+            LedgerEntry.payment_method == PaymentMethod.CASH,
+        )
+        .with_entities(func.coalesce(func.sum(LedgerEntry.amount), 0))
+        .scalar()
+    )
+
+    cash_expenses = _ZERO
+    for row in ledger_base.filter(LedgerEntry.entry_type == LedgerEntryType.EXPENSE).all():
+        bucket = normalize_expense_payment_source(
+            str(row.payment_method) if row.payment_method else None
+        )
+        if bucket == ExpensePaymentSource.CASH_SHOP:
+            cash_expenses += _decimal(row.amount)
+
+    cash_team_advances = _decimal(
+        team_advance_filter.with_entities(func.coalesce(func.sum(TeamAdvance.amount), 0)).scalar()
+    )
+
+    total = cash_services + cash_product_sales - cash_expenses - cash_team_advances
+
+    return {
+        "net_cash_movement": str(total),
+        "breakdown": {
+            "cash_services": str(cash_services),
+            "cash_product_sales": str(cash_product_sales),
+            "cash_expenses": str(cash_expenses),
+            "cash_team_advances": str(cash_team_advances),
+        },
+    }
+
+
+def cash_at_hand_snapshot(db: Session) -> dict:
+    """
+    Live shop till balance derived from all active cash (shop) transactions.
+
+    Cash At Hand =
+      cash service revenue (official manager stream, payment_method=cash)
+      + cash product sales
+      − cash shop expenses
+      − cash team advances (non-voided)
+    """
+    movement = _cash_movement_breakdown(
+        db,
+        _active_ledger_rows(db),
+        team_advance_filter=db.query(TeamAdvance).filter(
+            TeamAdvance.advance_type == TeamAdvanceType.CASH,
+            TeamAdvance.status != TeamAdvanceStatus.VOIDED,
+        ),
+    )
+    return {
+        "cash_at_hand": movement["net_cash_movement"],
+        "cash_at_hand_breakdown": movement["breakdown"],
+    }
+
+
+def month_cash_movement_snapshot(db: Session, *, financial_month_id: uuid.UUID) -> dict:
+    """
+    Month-scoped net cash movement from transactions belonging to one financial month.
+
+    Net Cash Movement =
+      cash service revenue (official manager stream, payment_method=cash)
+      + cash product sales
+      − cash shop expenses
+      − cash team advances (non-voided, recorded in month)
+    """
+    movement = _cash_movement_breakdown(
+        db,
+        _active_ledger_for_month(db, financial_month_id),
+        team_advance_filter=db.query(TeamAdvance).filter(
+            TeamAdvance.financial_month_id == financial_month_id,
+            TeamAdvance.advance_type == TeamAdvanceType.CASH,
+            TeamAdvance.status != TeamAdvanceStatus.VOIDED,
+        ),
+    )
+    return {
+        "month_cash_movement": movement["net_cash_movement"],
+        "month_cash_movement_breakdown": movement["breakdown"],
+    }
 
 
 def financial_snapshot(

@@ -287,6 +287,15 @@ export type FinancialMonthRow = {
   total_business_net_profit?: string;
   inventory_value?: string;
   payment_methods?: Record<string, string>;
+  month_cash_movement?: string;
+  month_cash_movement_breakdown?: CashAtHandBreakdownRow;
+};
+
+export type CashAtHandBreakdownRow = {
+  cash_services: string;
+  cash_product_sales: string;
+  cash_expenses: string;
+  cash_team_advances: string;
 };
 
 export type OperationsSummaryResponse = {
@@ -308,6 +317,8 @@ export type OperationsSummaryResponse = {
   total_business_net_profit?: string;
   expense_sources: ExpenseSourcesRow;
   payment_methods: Record<string, string>;
+  cash_at_hand?: string;
+  cash_at_hand_breakdown?: CashAtHandBreakdownRow;
 };
 
 export type InventoryCategoryItem = {

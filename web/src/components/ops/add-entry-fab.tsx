@@ -328,9 +328,7 @@ export function AddEntryFab({
       setOpen(false);
       reset();
       onCreated?.();
-      if (kind === "service") {
-        dispatchReconciliationUpdated();
-      }
+      dispatchReconciliationUpdated();
     } catch (e) {
       if (e instanceof ApiError) toast.error(e.message);
       else toast.error("Could not record entry.");

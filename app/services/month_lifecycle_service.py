@@ -172,6 +172,9 @@ def capture_month_snapshot(db: Session, fm: FinancialMonth) -> FinancialMonthSna
         "team_advances_report": team_advance_service.month_report(
             db, year=fm.year, month=fm.month
         ),
+        **operations_analytics_service.month_cash_movement_snapshot(
+            db, financial_month_id=fm.id
+        ),
     }
     row = FinancialMonthSnapshot(
         financial_month_id=fm.id,
@@ -427,4 +430,9 @@ def serialize_month_row(
                 ),
             }
         )
+    row.update(
+        operations_analytics_service.month_cash_movement_snapshot(
+            db, financial_month_id=fm.id
+        )
+    )
     return row

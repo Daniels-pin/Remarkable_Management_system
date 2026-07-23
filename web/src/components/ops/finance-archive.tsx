@@ -7,6 +7,7 @@ import {
   Dialog,
   DialogBody,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -28,6 +29,7 @@ import {
   type FinancialMonthRow,
 } from "@/lib/api";
 import { ExpenseSourceBreakdownCard } from "@/components/ops/expense-source-breakdown";
+import { MonthCashMovementSection } from "@/components/ops/month-cash-movement-section";
 import {
   extractFinancialMonthMetrics,
   type FinancialMonthMetrics,
@@ -408,6 +410,9 @@ export function FinanceArchive() {
             <DialogTitle>
               {active ? monthLabel(active.year, active.month) : "Month"}
             </DialogTitle>
+            <DialogDescription>
+              Monthly revenue, expenses, and commission statements for this period.
+            </DialogDescription>
           </DialogHeader>
           <DialogBody>
             {active && activeMetrics ? (
@@ -421,6 +426,15 @@ export function FinanceArchive() {
                   metrics={activeMetrics}
                   variant={isAdmin ? "admin" : "manager"}
                 />
+
+                {activeMetrics.monthCashMovementBreakdown ? (
+                  <MonthCashMovementSection
+                    movement={activeMetrics.monthCashMovement}
+                    breakdown={activeMetrics.monthCashMovementBreakdown}
+                    archived={normalizeFinancialMonthState(active.state) === "locked"}
+                    compact
+                  />
+                ) : null}
 
                 {isAdmin ? (
                   <div className="grid gap-3 sm:grid-cols-2">
@@ -560,6 +574,9 @@ export function FinanceArchive() {
         <DialogContent className="w-[min(100%,26rem)]">
           <DialogHeader>
             <DialogTitle>Mark commission paid</DialogTitle>
+            <DialogDescription>
+              Record the payment date and who processed this commission payout.
+            </DialogDescription>
           </DialogHeader>
           <DialogBody className="space-y-4">
             <div className="space-y-2">

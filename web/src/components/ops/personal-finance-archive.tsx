@@ -6,6 +6,7 @@ import {
   Dialog,
   DialogBody,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -207,6 +208,9 @@ export function PersonalFinanceArchive() {
             <DialogTitle>
               {active ? monthLabel(active.year, active.month) : "Statement"}
             </DialogTitle>
+            <DialogDescription>
+              Your earnings, deductions, and payout status for this period.
+            </DialogDescription>
           </DialogHeader>
           <DialogBody>
             {active ? (

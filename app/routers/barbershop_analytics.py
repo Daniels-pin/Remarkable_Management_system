@@ -37,4 +37,8 @@ def operations_summary(
         custom_to=to_date,
     )
     snapshot = operations_analytics_service.financial_snapshot(db, start=start, end=end)
+    snapshot = {
+        **snapshot,
+        **operations_analytics_service.cash_at_hand_snapshot(db),
+    }
     return operations_analytics_service.shape_summary_for_role(snapshot, actor.user.role)

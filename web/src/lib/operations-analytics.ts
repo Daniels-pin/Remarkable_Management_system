@@ -40,5 +40,12 @@ export function mapOperationsSummary(raw: OperationsSummaryResponse): FinancialS
       transfer: num(raw.payment_methods.transfer ?? "0"),
       pos: num(raw.payment_methods.pos ?? "0"),
     },
+    cashAtHand: num(raw.cash_at_hand ?? "0"),
+    cashAtHandBreakdown: {
+      cashServices: num(raw.cash_at_hand_breakdown?.cash_services ?? "0"),
+      cashProductSales: num(raw.cash_at_hand_breakdown?.cash_product_sales ?? "0"),
+      cashExpenses: num(raw.cash_at_hand_breakdown?.cash_expenses ?? "0"),
+      cashTeamAdvances: num(raw.cash_at_hand_breakdown?.cash_team_advances ?? "0"),
+    },
   };
 }

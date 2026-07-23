@@ -43,6 +43,13 @@ export const EMPTY_FINANCIAL_SNAPSHOT: FinancialSnapshot = {
     transfer: 0,
     pos: 0,
   },
+  cashAtHand: 0,
+  cashAtHandBreakdown: {
+    cashServices: 0,
+    cashProductSales: 0,
+    cashExpenses: 0,
+    cashTeamAdvances: 0,
+  },
 };
 
 export function scaleFinancials(
@@ -80,6 +87,13 @@ export function scaleFinancials(
       card: round(base.paymentMethods.card),
       transfer: round(base.paymentMethods.transfer),
       pos: round(base.paymentMethods.pos),
+    },
+    cashAtHand: round(base.cashAtHand),
+    cashAtHandBreakdown: {
+      cashServices: round(base.cashAtHandBreakdown.cashServices),
+      cashProductSales: round(base.cashAtHandBreakdown.cashProductSales),
+      cashExpenses: round(base.cashAtHandBreakdown.cashExpenses),
+      cashTeamAdvances: round(base.cashAtHandBreakdown.cashTeamAdvances),
     },
   };
 }

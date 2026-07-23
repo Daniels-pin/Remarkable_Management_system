@@ -28,6 +28,7 @@ import {
   type TeamAdvancesReport,
 } from "@/lib/api";
 import { formatNaira } from "@/lib/format";
+import { dispatchReconciliationUpdated } from "@/lib/reconciliation-events";
 import { cn } from "@/lib/utils";
 
 type AdvanceFormKind = "cash" | "product";
@@ -67,6 +68,7 @@ function VoidDialog({
       toast.success("Team advance voided.");
       onOpenChange(false);
       onVoided();
+      dispatchReconciliationUpdated();
     } catch (e) {
       toast.error(e instanceof ApiError ? e.message : "Could not void advance.");
     } finally {
@@ -209,6 +211,7 @@ function CreateAdvanceDialog({
       toast.success("Team advance recorded.");
       onOpenChange(false);
       onCreated();
+      dispatchReconciliationUpdated();
     } catch (e) {
       toast.error(e instanceof ApiError ? e.message : "Could not record advance.");
     } finally {
