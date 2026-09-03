@@ -2216,6 +2216,8 @@ export type FurnitureOrder = {
   items: FurnitureOrderItem[];
   source_quotation_id: string | null;
   source_quotation_number: string | null;
+  converted_invoice_id: string | null;
+  converted_invoice_number: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -2361,6 +2363,8 @@ export type FurnitureQuotation = {
   created_by_user_id: string | null;
   converted_order_id: string | null;
   converted_order_number: string | null;
+  converted_invoice_id: string | null;
+  converted_invoice_number: string | null;
   created_at: string;
   updated_at: string;
   is_autosave_session?: boolean;
@@ -2495,5 +2499,279 @@ export function autosaveFurnitureQuotation(body: {
 export function discardFurnitureQuotationActiveAutosave() {
   return apiFetch<{ discarded: boolean }>("/api/v1/furniture/quotations/active-autosave", {
     method: "DELETE",
+  });
+}
+
+export type FurnitureInvoiceStatus =
+  | "draft"
+  | "sent"
+  | "partially_paid"
+  | "paid"
+  | "overdue"
+  | "cancelled"
+  | "voided"
+  | "completed";
+
+export type FurnitureInvoicePaymentScenario = "no_payment" | "advance_payment" | "paid_in_full";
+
+export type FurnitureInvoiceItem = FurnitureOrderItem;
+
+export type FurnitureInvoicePayment = {
+  id: string;
+  amount: number;
+  method: string;
+  reference: string | null;
+  description: string;
+  payment_date: string;
+  notes: string | null;
+  recorded_at: string;
+};
+
+export type FurnitureInvoiceStatusHistoryEntry = {
+  id: string;
+  status: FurnitureInvoiceStatus;
+  note: string | null;
+  recorded_at: string;
+};
+
+export type FurnitureInvoice = {
+  id: string;
+  invoice_number: string;
+  customer_name: string;
+  customer_address: string | null;
+  customer_phone: string;
+  customer_email: string | null;
+  sales_representative: string | null;
+  date_issued: string;
+  due_date: string;
+  payment_terms: string | null;
+  internal_notes: string | null;
+  source: "manual" | "quotation" | "order";
+  created_from: string;
+  source_quotation_id: string | null;
+  source_quotation_number: string | null;
+  source_order_id: string | null;
+  source_order_number: string | null;
+  status: FurnitureInvoiceStatus;
+  stored_status: FurnitureInvoiceStatus;
+  void_reason: string | null;
+  voided_at: string | null;
+  subtotal: number;
+  discount: number;
+  additional_charges: number;
+  tax: number;
+  grand_total: number;
+  amount_paid: number;
+  balance_due: number;
+  items: FurnitureInvoiceItem[];
+  payments: FurnitureInvoicePayment[];
+  status_history: FurnitureInvoiceStatusHistoryEntry[];
+  created_by: string | null;
+  created_by_user_id: string | null;
+  sent_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type FurnitureInvoiceDashboardSummary = {
+  total_invoices: number;
+  draft: number;
+  sent: number;
+  partially_paid: number;
+  paid: number;
+  overdue: number;
+  voided: number;
+  outstanding_balance: number;
+  revenue_collected: number;
+};
+
+export type FurnitureInvoicePeriod = "today" | "week" | "month" | "year" | "all";
+
+export function getFurnitureInvoiceDashboardSummary(params?: {
+  period?: FurnitureInvoicePeriod;
+  date_from?: string;
+  date_to?: string;
+}) {
+  const search = new URLSearchParams();
+  if (params?.period) search.set("period", params.period);
+  if (params?.date_from) search.set("date_from", params.date_from);
+  if (params?.date_to) search.set("date_to", params.date_to);
+  const suffix = search.toString() ? `?${search.toString()}` : "";
+  return apiFetch<FurnitureInvoiceDashboardSummary>(
+    `/api/v1/furniture/invoices/dashboard/summary${suffix}`,
+  );
+}
+
+export function listFurnitureInvoices(params?: {
+  q?: string;
+  status?: string;
+  customer?: string;
+  sales_representative?: string;
+  date_from?: string;
+  date_to?: string;
+  period?: FurnitureInvoicePeriod;
+}) {
+  const search = new URLSearchParams();
+  if (params?.q?.trim()) search.set("q", params.q.trim());
+  if (params?.status && params.status !== "all") search.set("status", params.status);
+  if (params?.customer?.trim()) search.set("customer", params.customer.trim());
+  if (params?.sales_representative?.trim()) {
+    search.set("sales_representative", params.sales_representative.trim());
+  }
+  if (params?.date_from) search.set("date_from", params.date_from);
+  if (params?.date_to) search.set("date_to", params.date_to);
+  if (params?.period) search.set("period", params.period);
+  const suffix = search.toString() ? `?${search.toString()}` : "";
+  return apiFetch<{ items: FurnitureInvoice[] }>(`/api/v1/furniture/invoices${suffix}`);
+}
+
+export function getFurnitureInvoice(invoiceId: string) {
+  return apiFetch<FurnitureInvoice>(`/api/v1/furniture/invoices/${invoiceId}`);
+}
+
+export function createFurnitureInvoice(body: {
+  customer_name: string;
+  customer_address?: string | null;
+  customer_phone: string;
+  customer_email?: string | null;
+  sales_representative?: string | null;
+  date_issued: string;
+  due_date: string;
+  payment_terms?: string | null;
+  internal_notes?: string | null;
+  items: FurnitureOrderItemInput[];
+  discount?: number;
+  additional_charges?: number;
+  tax?: number | null;
+  advance_payment?: number;
+  advance_payment_method?: string | null;
+  advance_payment_reference?: string | null;
+  advance_payment_date?: string | null;
+}) {
+  return apiFetch<FurnitureInvoice>("/api/v1/furniture/invoices", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function updateFurnitureInvoice(
+  invoiceId: string,
+  body: {
+    customer_name: string;
+    customer_address?: string | null;
+    customer_phone: string;
+    customer_email?: string | null;
+    sales_representative?: string | null;
+    date_issued: string;
+    due_date: string;
+    payment_terms?: string | null;
+    internal_notes?: string | null;
+    items: FurnitureOrderItemInput[];
+    discount?: number;
+    additional_charges?: number;
+    tax?: number | null;
+  },
+) {
+  return apiFetch<FurnitureInvoice>(`/api/v1/furniture/invoices/${invoiceId}`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+export function updateFurnitureInvoiceNotes(
+  invoiceId: string,
+  body: { internal_notes?: string | null; payment_terms?: string | null },
+) {
+  return apiFetch<FurnitureInvoice>(`/api/v1/furniture/invoices/${invoiceId}/notes`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+export function sendFurnitureInvoice(invoiceId: string) {
+  return apiFetch<FurnitureInvoice>(`/api/v1/furniture/invoices/${invoiceId}/send`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export function recordFurnitureInvoicePayment(
+  invoiceId: string,
+  body: {
+    amount: number;
+    method: string;
+    reference?: string | null;
+    payment_date: string;
+    notes?: string | null;
+  },
+) {
+  return apiFetch<FurnitureInvoice>(`/api/v1/furniture/invoices/${invoiceId}/payments`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function voidFurnitureInvoice(invoiceId: string, reason: string) {
+  return apiFetch<FurnitureInvoice>(`/api/v1/furniture/invoices/${invoiceId}/void`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
+}
+
+export function duplicateFurnitureInvoice(invoiceId: string) {
+  return apiFetch<FurnitureInvoice>(`/api/v1/furniture/invoices/${invoiceId}/duplicate`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export function deleteFurnitureInvoice(invoiceId: string) {
+  return apiFetch<{ deleted: boolean }>(`/api/v1/furniture/invoices/${invoiceId}`, {
+    method: "DELETE",
+  });
+}
+
+export function downloadFurnitureInvoicePdf(invoiceId: string) {
+  return apiFetchBlob(`/api/v1/furniture/invoices/${invoiceId}/pdf`);
+}
+
+export function convertFurnitureQuotationToInvoice(
+  quotationId: string,
+  body: {
+    payment_scenario: FurnitureInvoicePaymentScenario;
+    payment_amount?: number | null;
+    payment_method?: string | null;
+    payment_date?: string | null;
+    payment_reference?: string | null;
+    due_date?: string | null;
+    payment_terms?: string | null;
+    sales_representative?: string | null;
+  },
+) {
+  return apiFetch<FurnitureInvoice>(
+    `/api/v1/furniture/invoices/convert/quotation/${quotationId}`,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+export function convertFurnitureOrderToInvoice(
+  orderId: string,
+  body: {
+    payment_scenario: FurnitureInvoicePaymentScenario;
+    payment_amount?: number | null;
+    payment_method?: string | null;
+    payment_date?: string | null;
+    payment_reference?: string | null;
+    due_date?: string | null;
+    payment_terms?: string | null;
+    sales_representative?: string | null;
+  },
+) {
+  return apiFetch<FurnitureInvoice>(`/api/v1/furniture/invoices/convert/order/${orderId}`, {
+    method: "POST",
+    body: JSON.stringify(body),
   });
 }

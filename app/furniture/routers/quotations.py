@@ -136,7 +136,7 @@ def convert_quotation_to_order(
     db.commit()
     return {
         "quotation": quotation_service.quotation_to_dict(db, quotation),
-        "order": order_service.order_to_dict(order),
+        "order": order_service.order_to_dict(db, order),
     }
 
 

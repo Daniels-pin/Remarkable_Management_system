@@ -1,9 +1,11 @@
 "use client";
 
-import { Plus, Search } from "lucide-react";
+import Link from "next/link";
+import { Plus, Receipt, Search } from "lucide-react";
 import * as React from "react";
 import { toast } from "sonner";
 
+import { ConvertFurnitureToInvoiceDialog } from "@/components/furniture/convert-furniture-to-invoice-dialog";
 import { CreateFurnitureOrderDialog } from "@/components/furniture/create-furniture-order-dialog";
 import { FurnitureOrderStatusBadge } from "@/components/furniture/furniture-order-status-badge";
 import { RecordFurnitureDepositDialog } from "@/components/furniture/record-furniture-deposit-dialog";
@@ -34,6 +36,8 @@ export function FurnitureOrdersPanel() {
   const [createOpen, setCreateOpen] = React.useState(false);
   const [depositOrder, setDepositOrder] = React.useState<FurnitureOrder | null>(null);
   const [depositOpen, setDepositOpen] = React.useState(false);
+  const [convertOrder, setConvertOrder] = React.useState<FurnitureOrder | null>(null);
+  const [convertOpen, setConvertOpen] = React.useState(false);
   const [statusUpdating, setStatusUpdating] = React.useState<string | null>(null);
 
   React.useEffect(() => {
@@ -134,6 +138,14 @@ export function FurnitureOrdersPanel() {
                           From {order.source_quotation_number}
                         </div>
                       ) : null}
+                      {order.converted_invoice_number ? (
+                        <Link
+                          href="/furniture/invoices"
+                          className="text-xs font-medium text-[var(--foreground)] underline-offset-2 hover:underline"
+                        >
+                          Invoice {order.converted_invoice_number}
+                        </Link>
+                      ) : null}
                     </td>
                     <td className="px-4 py-3">
                       <div>{order.customer_name}</div>
@@ -186,6 +198,21 @@ export function FurnitureOrdersPanel() {
                         >
                           Record deposit
                         </Button>
+                        {!order.converted_invoice_id ? (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="h-8 text-xs"
+                            onClick={() => {
+                              setConvertOrder(order);
+                              setConvertOpen(true);
+                            }}
+                          >
+                            <Receipt className="mr-1 h-3 w-3" />
+                            Convert to invoice
+                          </Button>
+                        ) : null}
                       </div>
                     </td>
                   </tr>
@@ -259,6 +286,26 @@ export function FurnitureOrdersPanel() {
                   >
                     Record deposit
                   </Button>
+                  {!order.converted_invoice_id ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        setConvertOrder(order);
+                        setConvertOpen(true);
+                      }}
+                    >
+                      Convert to invoice
+                    </Button>
+                  ) : order.converted_invoice_number ? (
+                    <Link
+                      href="/furniture/invoices"
+                      className="text-center text-sm font-medium underline-offset-2 hover:underline"
+                    >
+                      View {order.converted_invoice_number}
+                    </Link>
+                  ) : null}
                 </div>
               </div>
             ))}
@@ -276,6 +323,12 @@ export function FurnitureOrdersPanel() {
         open={depositOpen}
         onOpenChange={setDepositOpen}
         onRecorded={() => void load()}
+      />
+      <ConvertFurnitureToInvoiceDialog
+        source={convertOrder ? { type: "order", data: convertOrder } : null}
+        open={convertOpen}
+        onOpenChange={setConvertOpen}
+        onConverted={() => void load()}
       />
     </div>
   );

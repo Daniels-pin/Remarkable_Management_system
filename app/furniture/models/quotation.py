@@ -84,6 +84,12 @@ class FurnitureQuotation(Base, TimestampMixin):
         nullable=True,
         index=True,
     )
+    converted_invoice_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("furniture_invoices.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     items: Mapped[list[FurnitureQuotationItem]] = relationship(
         "FurnitureQuotationItem",

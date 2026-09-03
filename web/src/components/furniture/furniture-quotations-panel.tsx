@@ -8,12 +8,15 @@ import {
   Pencil,
   Plus,
   Printer,
+  Receipt,
   Search,
   Settings2,
 } from "lucide-react";
+import Link from "next/link";
 import * as React from "react";
 import { toast } from "sonner";
 
+import { ConvertFurnitureToInvoiceDialog } from "@/components/furniture/convert-furniture-to-invoice-dialog";
 import { FurnitureQuotationFormDialog } from "@/components/furniture/furniture-quotation-form-dialog";
 import { FurnitureQuotationPaymentSettingsDialog } from "@/components/furniture/furniture-quotation-payment-settings-dialog";
 import { FurnitureQuotationStatusBadge } from "@/components/furniture/furniture-quotation-status-badge";
@@ -51,6 +54,8 @@ export function FurnitureQuotationsPanel() {
   const [viewQuotation, setViewQuotation] = React.useState<FurnitureQuotation | null>(null);
   const [viewOpen, setViewOpen] = React.useState(false);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
+  const [convertQuotation, setConvertQuotation] = React.useState<FurnitureQuotation | null>(null);
+  const [convertInvoiceOpen, setConvertInvoiceOpen] = React.useState(false);
   const [actionId, setActionId] = React.useState<string | null>(null);
 
   React.useEffect(() => {
@@ -191,6 +196,9 @@ export function FurnitureQuotationsPanel() {
     const canEdit = quotation.status !== "converted";
     const canFinalize = quotation.status === "draft";
     const canConvert = quotation.status === "finalized";
+    const canConvertInvoice =
+      !quotation.converted_invoice_id &&
+      (quotation.status === "finalized" || quotation.status === "converted");
 
     return (
       <DropdownMenu>
@@ -232,6 +240,17 @@ export function FurnitureQuotationsPanel() {
             <DropdownMenuItem onClick={() => void handleConvert(quotation)}>
               <Plus className="mr-2 h-4 w-4" />
               Convert to order
+            </DropdownMenuItem>
+          ) : null}
+          {canConvertInvoice ? (
+            <DropdownMenuItem
+              onClick={() => {
+                setConvertQuotation(quotation);
+                setConvertInvoiceOpen(true);
+              }}
+            >
+              <Receipt className="mr-2 h-4 w-4" />
+              Convert to invoice
             </DropdownMenuItem>
           ) : null}
         </DropdownMenuContent>
@@ -312,6 +331,14 @@ export function FurnitureQuotationsPanel() {
                           → {quotation.converted_order_number}
                         </div>
                       ) : null}
+                      {quotation.converted_invoice_number ? (
+                        <Link
+                          href="/furniture/invoices"
+                          className="mt-1 block text-xs font-medium underline-offset-2 hover:underline"
+                        >
+                          Invoice {quotation.converted_invoice_number}
+                        </Link>
+                      ) : null}
                     </td>
                     <td className="px-4 py-3 text-[var(--muted-foreground)]">
                       {formatCatalogDate(quotation.date_issued) ?? quotation.date_issued}
@@ -385,6 +412,12 @@ export function FurnitureQuotationsPanel() {
         onOpenChange={setViewOpen}
       />
       <FurnitureQuotationPaymentSettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
+      <ConvertFurnitureToInvoiceDialog
+        source={convertQuotation ? { type: "quotation", data: convertQuotation } : null}
+        open={convertInvoiceOpen}
+        onOpenChange={setConvertInvoiceOpen}
+        onConverted={() => void load()}
+      />
     </div>
   );
 }

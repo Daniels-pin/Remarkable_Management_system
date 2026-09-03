@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.core.exceptions import NotFoundError, ValidationAppError
 from app.furniture.models.enums import FurnitureOrderStatus, FurnitureQuotationStatus
+from app.furniture.models.invoice import FurnitureInvoice
 from app.furniture.models.order import (
     FurnitureOrder,
     FurnitureOrderItem,
@@ -231,6 +232,12 @@ def quotation_to_dict(db: Session, quotation: FurnitureQuotation) -> dict:
         if order:
             converted_order_number = order.order_number
 
+    converted_invoice_number = None
+    if quotation.converted_invoice_id:
+        invoice = db.get(FurnitureInvoice, quotation.converted_invoice_id)
+        if invoice:
+            converted_invoice_number = invoice.invoice_number
+
     return {
         "id": str(quotation.id),
         "quotation_number": quotation.quotation_number,
@@ -253,6 +260,10 @@ def quotation_to_dict(db: Session, quotation: FurnitureQuotation) -> dict:
         if quotation.converted_order_id
         else None,
         "converted_order_number": converted_order_number,
+        "converted_invoice_id": str(quotation.converted_invoice_id)
+        if quotation.converted_invoice_id
+        else None,
+        "converted_invoice_number": converted_invoice_number,
         "created_at": quotation.created_at.isoformat(),
         "updated_at": quotation.updated_at.isoformat(),
         "is_autosave_session": quotation.is_autosave_session,

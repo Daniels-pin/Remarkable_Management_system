@@ -23,7 +23,7 @@ def list_orders(
     _: ActorContext = Depends(get_admin_actor),
 ) -> dict:
     rows = order_service.list_orders(db, search=q)
-    return {"items": [order_service.order_to_dict(r) for r in rows]}
+    return {"items": [order_service.order_to_dict(db, r) for r in rows]}
 
 
 @router.post("")
@@ -34,7 +34,7 @@ def create_order(
 ) -> dict:
     row = order_service.create_order(db, body)
     db.commit()
-    return order_service.order_to_dict(row)
+    return order_service.order_to_dict(db, row)
 
 
 @router.get("/{order_id}")
@@ -44,7 +44,7 @@ def get_order(
     _: ActorContext = Depends(get_admin_actor),
 ) -> dict:
     row = order_service.get_order(db, order_id)
-    return order_service.order_to_dict(row)
+    return order_service.order_to_dict(db, row)
 
 
 @router.patch("/{order_id}/status")
@@ -56,7 +56,7 @@ def update_order_status(
 ) -> dict:
     row = order_service.update_order_status(db, order_id, body)
     db.commit()
-    return order_service.order_to_dict(row)
+    return order_service.order_to_dict(db, row)
 
 
 @router.post("/{order_id}/deposits")
@@ -68,4 +68,4 @@ def record_deposit(
 ) -> dict:
     row = order_service.record_deposit(db, order_id, body)
     db.commit()
-    return order_service.order_to_dict(row)
+    return order_service.order_to_dict(db, row)

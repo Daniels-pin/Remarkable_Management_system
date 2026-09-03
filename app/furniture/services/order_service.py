@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.core.exceptions import NotFoundError, ValidationAppError
 from app.furniture.models.enums import FurnitureOrderStatus
+from app.furniture.models.invoice import FurnitureInvoice
 from app.furniture.models.order import (
     FurnitureOrder,
     FurnitureOrderItem,
@@ -62,10 +63,16 @@ def order_item_to_dict(row: FurnitureOrderItem) -> dict:
     }
 
 
-def order_to_dict(order: FurnitureOrder) -> dict:
+def order_to_dict(db: Session, order: FurnitureOrder) -> dict:
     deposit_paid = _deposit_total(order)
     grand_total = _money(order.grand_total)
     outstanding = _money(grand_total - deposit_paid)
+    converted_invoice_number = None
+    if order.converted_invoice_id:
+        invoice = db.get(FurnitureInvoice, order.converted_invoice_id)
+        if invoice:
+            converted_invoice_number = invoice.invoice_number
+
     return {
         "id": str(order.id),
         "order_number": order.order_number,
@@ -81,6 +88,10 @@ def order_to_dict(order: FurnitureOrder) -> dict:
         "items": [order_item_to_dict(i) for i in order.items],
         "source_quotation_id": str(order.source_quotation_id) if order.source_quotation_id else None,
         "source_quotation_number": order.source_quotation_number,
+        "converted_invoice_id": str(order.converted_invoice_id)
+        if order.converted_invoice_id
+        else None,
+        "converted_invoice_number": converted_invoice_number,
         "created_at": order.created_at.isoformat(),
         "updated_at": order.updated_at.isoformat(),
     }

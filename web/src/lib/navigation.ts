@@ -129,6 +129,12 @@ export const furnitureNav: NavItem[] = [
     icon: FileText,
     roles: ["admin"],
   },
+  {
+    label: "Invoices",
+    href: "/furniture/invoices",
+    icon: Receipt,
+    roles: ["admin"],
+  },
 ];
 
 export function getNavForPath(pathname: string): NavItem[] {
